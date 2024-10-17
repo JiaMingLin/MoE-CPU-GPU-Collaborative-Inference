@@ -180,7 +180,7 @@ def dump_token_generation_time_to_csv(logs: list, cpu_freq_avg: list, file_path:
     with open(file_path, mode='w') as file:
         writer = csv.writer(file)
         # Write the header
-        writer.writerow(["Index", "Time", "Timestamp", "Accumulated Generation Throughput (tokens/s)", "CPU Frequency"])
+        writer.writerow(["Index", "Time", "Timestamp", "Accumulated Generation Throughput (tokens/s)", "CPU Frequency", "CPU Temperature"])
 
         # Write the log values
         time_sum = 0
@@ -191,7 +191,7 @@ def dump_token_generation_time_to_csv(logs: list, cpu_freq_avg: list, file_path:
                 cpu_freq = cpu_freq_avg[-1]
             else:
                 cpu_freq = cpu_freq_avg[timestamp]
-            writer.writerow([i+1, log, timestamp, f"{(i+1) / time_sum}:.3f", cpu_freq])
+            writer.writerow([i+1, log, timestamp, f"{(i+1) / time_sum:.3f}", cpu_freq[-1], cpu_freq[-2]])
 
 def dump_logs_to_csv(logs: dict, file_path: str):
     """
@@ -1028,7 +1028,7 @@ def generate(
     if profile is True:
         cpumonitor.stop()
         cpumonitor.save_data("cpu_freq_avg.csv")
-        dump_token_generation_time_to_csv(token_gen_time_history, cpumonitor.get_data_avg, "token_gen_time.csv")
+        dump_token_generation_time_to_csv(token_gen_time_history, cpumonitor.get_data_avg(), "token_gen_time.csv")
 
     return (
         seqlens,
