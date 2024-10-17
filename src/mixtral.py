@@ -109,6 +109,9 @@ class CPUMonitor:
             writer = csv.writer(f)
             writer.writerow(title)
             writer.writerows(data)
+    
+    def get_data_avg(self, type="avg"):
+        return self.data_avg
 
 def dump_expert_choices_to_csv(expert_choices: list, file_path: str):
     """
@@ -164,6 +167,31 @@ def dump_expert_cache_to_csv(expert_choices: list, file_path: str, cache_size: i
         cache_hit_1 = cache_hit_1 / total_test * 100
         cache_hit_2 = cache_hit_2 / total_test * 100
         print(f"Cache hit 1: {cache_hit_1:.1f}\n Cache hit 2: {cache_hit_2:.1f}")
+
+def dump_token_generation_time_to_csv(logs: list, cpu_freq_avg: list, file_path: str):
+    """
+    Dumps the LOGS dictionary to a CSV file.
+
+    Args:
+        logs (list): The list containing token generation time data.
+        file_path (str): The path to the CSV file where token generation time will be dumped.
+    """
+    # Open the file and write the logs
+    with open(file_path, mode='w') as file:
+        writer = csv.writer(file)
+        # Write the header
+        writer.writerow(["Index", "Time", "Timestamp", "Accumulated Generation Throughput (tokens/s)", "CPU Frequency"])
+
+        # Write the log values
+        time_sum = 0
+        for i, log in enumerate(logs):
+            time_sum += log
+            timestamp = int(time_sum)
+            if timestamp >= len(cpu_freq_avg):
+                cpu_freq = cpu_freq_avg[-1]
+            else:
+                cpu_freq = cpu_freq_avg[timestamp]
+            writer.writerow([i+1, log, timestamp, f"{(i+1) / time_sum}:.3f", cpu_freq])
 
 def dump_logs_to_csv(logs: dict, file_path: str):
     """
@@ -725,6 +753,14 @@ class MoeLayer(nn.Module):
                 ex = inputs[0]
                 st = time.time()
                 ret_l, cache_hit = self.experts.cache_aware_forward(self.li, selected_experts[0].tolist(), ex)
+
+                # if selected_experts[0][0] > selected_experts[0][1]:
+                #     CUR_TOKEN_CHOICES.append(selected_experts[0][1].item())
+                #     CUR_TOKEN_CHOICES.append(selected_experts[0][0].item())
+                # else:
+                #     CUR_TOKEN_CHOICES.append(selected_experts[0][0].item())
+                #     CUR_TOKEN_CHOICES.append(selected_experts[0][1].item())
+
                 for idx, i in enumerate(selected_experts[0]):
                     batch_idx, nth_expert = torch.where(selected_experts == i)
                     ret_l[idx] = ret_l[idx].to(weights.device)
@@ -961,6 +997,8 @@ def generate(
 
     cpumonitor = CPUMonitor()
     cpumonitor.start()
+    token_gen_time_history = []
+    prev_token_time = time.time()
     for _ in range(max_tokens):
         next_token = sample(last_token_prelogits, temperature=temperature, top_p=0.8)
         is_finished = is_finished | (next_token == eos_id).cpu()
@@ -970,6 +1008,8 @@ def generate(
 
         generated_tensors.append(next_token[:, None])
         last_token_prelogits = model.forward(next_token, seqlens=[1] * B, cache=cache)
+        token_gen_time_history.append(time.time() - prev_token_time)
+        prev_token_time = time.time()
         assert last_token_prelogits.shape == (B, V)
 
     generated_tokens: List[List[int]]
@@ -985,6 +1025,7 @@ def generate(
     decode_time = decode_tic.elapsed_time(decode_toc) / 1000  # to seconds
     cpumonitor.stop()
     cpumonitor.save_data("cpu_freq_avg.csv")
+    dump_token_generation_time_to_csv(token_gen_time_history, cpumonitor.get_data_avg, "token_gen_time.csv")
 
     return (
         seqlens,
