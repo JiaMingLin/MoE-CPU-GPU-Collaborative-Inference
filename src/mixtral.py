@@ -949,6 +949,7 @@ def generate(
     max_batch_size: int = 64,
     temperature: float = 0.0,
     eos_id: Optional[int] = None,
+    profile: bool = False,
 ) -> Tuple[List[str], int, float, int, float]:
     model = model.eval()
     prefill_tic = torch.cuda.Event(enable_timing=True)
@@ -995,8 +996,9 @@ def generate(
     generated_tensors = []
     is_finished = torch.tensor([False for _ in range(B)])
 
-    cpumonitor = CPUMonitor()
-    cpumonitor.start()
+    if profile is True:
+        cpumonitor = CPUMonitor()
+        cpumonitor.start()
     token_gen_time_history = []
     prev_token_time = time.time()
     for _ in range(max_tokens):
@@ -1023,9 +1025,10 @@ def generate(
     decode_toc.record()
     torch.cuda.synchronize(device=gpu)
     decode_time = decode_tic.elapsed_time(decode_toc) / 1000  # to seconds
-    cpumonitor.stop()
-    cpumonitor.save_data("cpu_freq_avg.csv")
-    dump_token_generation_time_to_csv(token_gen_time_history, cpumonitor.get_data_avg, "token_gen_time.csv")
+    if profile is True:
+        cpumonitor.stop()
+        cpumonitor.save_data("cpu_freq_avg.csv")
+        dump_token_generation_time_to_csv(token_gen_time_history, cpumonitor.get_data_avg, "token_gen_time.csv")
 
     return (
         seqlens,
@@ -1108,6 +1111,7 @@ def main(
         max_tokens=max_tokens,
         max_batch_size=len(prompts),
         eos_id=tokenizer.instruct_tokenizer.tokenizer.eos_id,
+        profile=True,
     )
     print("=" * 20)
     print("PERFORMANCE BREAKDOWN\n")
