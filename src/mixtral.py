@@ -1,10 +1,13 @@
 # reference: https://github.com/mistralai/mistral-inference
+import os
 import csv
 import nvtx
 import time
 import argparse
 import inspect
 import json
+import threading
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -39,6 +42,73 @@ def reset_logs():  # perf_analysis
     CUR_TOKEN_CHOICES = []
 reset_logs()
 
+class CPUMonitor:
+    def __init__(self):
+        self.running = False
+        self.data = []
+        self.data_avg = []
+        self.OMP_NUM_THREADS = os.getenv("OMP_NUM_THREADS", 24)
+        self.cnt = 0
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._capture_mhz)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        self.thread.join()
+
+    def reset(self):
+        self.data = []
+        self.data_avg = []
+        self.cnt = 0
+
+    def get_cpu_temperature(self):
+        result = subprocess.run(
+            "sensors",
+            shell=True,
+            capture_output=True,
+            text=True
+        )
+        output = result.stdout.strip().split('\n')
+        
+        temperatures = {}
+        for line in output:
+            if 'Tctl' in line or 'Tccd' in line:
+                parts = line.split(':')
+                label = parts[0].strip()
+                temp = parts[1].strip().split(' ')[0].replace('+', '').replace('°C', '')
+                temperatures[label] = float(temp)
+        
+        return temperatures
+
+    def _capture_mhz(self):
+        while self.running:
+            result = subprocess.run(
+                f"cat /proc/cpuinfo | grep 'MHz' | sed 's/cpu MHz[[:space:]]*:[[:space:]]*//' | sort -n | tail -n {self.OMP_NUM_THREADS}",
+                shell=True,
+                capture_output=True,
+                text=True
+            )
+            # convert to int
+            arr = [int(float(x)) for x in result.stdout.strip().split('\n')]
+            temp = self.get_cpu_temperature()['Tctl']
+            if self.cnt % 30 == 0:
+                print([self.cnt, temp] + arr)
+            self.data.append([self.cnt, temp] + arr)
+            self.data_avg.append([self.cnt, temp, int(mean(arr))])
+            self.cnt += 1
+            time.sleep(1)
+
+    def save_data(self, path, type="avg"):
+        # save data as csv
+        data = self.data_avg if type == "avg" else self.data
+        title = ["Seconds", "Temperature"] + [f"cpu{i}" for i in range(len(data[0]))]
+        with open(path, 'w') as f:
+            writer = csv.writer(f)
+            writer.writerow(title)
+            writer.writerows(data)
 
 def dump_expert_choices_to_csv(expert_choices: list, file_path: str):
     """
@@ -889,6 +959,8 @@ def generate(
     generated_tensors = []
     is_finished = torch.tensor([False for _ in range(B)])
 
+    cpumonitor = CPUMonitor()
+    cpumonitor.start()
     for _ in range(max_tokens):
         next_token = sample(last_token_prelogits, temperature=temperature, top_p=0.8)
         is_finished = is_finished | (next_token == eos_id).cpu()
@@ -911,6 +983,8 @@ def generate(
     decode_toc.record()
     torch.cuda.synchronize(device=gpu)
     decode_time = decode_tic.elapsed_time(decode_toc) / 1000  # to seconds
+    cpumonitor.stop()
+    cpumonitor.save_data("cpu_freq_avg.csv")
 
     return (
         seqlens,
