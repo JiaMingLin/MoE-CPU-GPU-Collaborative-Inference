@@ -13,4 +13,4 @@ export OMP_PROC_BIND=true
 export OMP_PLACES=cores
 
 # python -u v0_cpu_experts/solo_gpu_model_profile.py --model-path $MODEL --prompt "to be, or not to be" --max-tokens $FIXLEN  $@
-python -u $HOME/MoE-CPU-GPU-Collaboration-Inference/src/mixtral.py --prompt 'implement a red-black tree using C++ and show me the  example usage' --model-path $MODEL --max-tokens $FIXLEN  $@
+python -u ../../../src/mixtral.py --prompt 'implement a red-black tree using C++ and show me the  example usage' --model-path $MODEL --max-tokens $FIXLEN  $@

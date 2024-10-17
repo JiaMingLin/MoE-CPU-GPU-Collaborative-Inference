@@ -1,5 +1,3 @@
-#!/home/joe/miniconda3/envs/mixtral/bin/python
-
 # reference: https://github.com/mistralai/mistral-inference
 import csv
 import nvtx
@@ -461,7 +459,12 @@ class Experts:
     def __init__(self, ws: dict):
         self.ws = ws
 
-    def init_cache(self, cache_nblock: int, cache_nway: int, quota: int, device="cuda") -> None:
+    def init_cache(self, 
+                   cache_nblock: int,
+                   cache_nway: int,
+                   quota: int,
+                   replacement_policy: str, # FIFO or LRU
+                   device="cuda") -> None:
         single_expert_shape = list(self.ws[f"{0}.{0}"].shape)
         for i in range(32):
             for j in range(8):
@@ -477,25 +480,40 @@ class Experts:
         self.cache_valid = torch.zeros((cache_nblock, cache_nway), dtype=torch.int8, device="cpu")
         print(f"Cache shape: {self.cache_shape}")
 
+        self.replacement_policy = replacement_policy
+
+        self.cache_FIFO = []
         self.cache_LRU = []
         self.cuda_stream = torch.cuda.Stream(device="cuda")
         self.cache_device = device
         with torch.cuda.stream(self.cuda_stream):
             self.cache = torch.empty(self.cache_shape, dtype=torch.bfloat16, device=self.cache_device)
         for i in range(self.nblocks):
-            push_list = []
+            push_list_FIFO = []
+            push_list_LRU = []
             for j in range(self.nways):
-                push_list.append(j)
-            self.cache_LRU.append(push_list)
+                push_list_FIFO.append(j)
+                push_list_LRU.append(0)
+            self.cache_FIFO.append(push_list_FIFO)
+            self.cache_LRU.append(push_list_LRU)
+
     
     def pop_cache(self, li: int) -> None:
-        x = self.cache_LRU[li].pop(0)
-        self.cache_LRU[li].append(x)
+        if self.replacement_policy == "FIFO":
+            x = self.cache_FIFO[li].pop(0)
+            self.cache_FIFO[li].append(x)
+        else:
+            # get argmin from self.cache_LRU[li]
+            argmin_index = self.cache_LRU[li].index(min(self.cache_LRU[li]))
+            x = argmin_index
+            mx = max(self.cache_LRU[li])
+            self.cache_LRU[li][argmin_index] = mx + 1
         return x
     
     def check_cache_hit(self, li: int, ei: int) -> bool:
         for i in range(self.nways):
             if self.cache_tag[li, i] == ei and self.cache_valid[li, i] > 0:
+                self.cache_LRU[li][i] += 1
                 return i
         return -1
     
@@ -789,8 +807,8 @@ class Transformer(nn.Module):
         outs = self.output(self.norm(h))
         return outs.float()
     
-    def init_cache(self, cache_nblock: int, cache_nway: int, quota: int) -> None:
-        self.experts.init_cache(cache_nblock, cache_nway, quota)
+    def init_cache(self, cache_nblock: int, cache_nway: int, quota: int, replacement_policy: str) -> None:
+        self.experts.init_cache(cache_nblock, cache_nway, quota, replacement_policy=replacement_policy)
 
     @staticmethod
     def load(model_path: Path, gpu: torch.device) -> "Transformer":
@@ -937,7 +955,8 @@ def main(
     cache_nways: int,
     cache_quota: int,
     csv_report_file: str,
-    cache_report_file: str
+    cache_report_file: str,
+    cache_replace_policy: str
 ):
     global EXPERT_CHOICES
     assert prompt or (prompt_path and n_prompts and n_prompts > 0)
@@ -952,7 +971,7 @@ def main(
     tokenizer = MistralTokenizer.v1()
     model = Transformer.load(Path(model_path), gpu_0)
 
-    model.init_cache(cache_nblocks, cache_nways, cache_quota)
+    model.init_cache(cache_nblocks, cache_nways, cache_quota, cache_replace_policy)
 
     # warmup
     generate(
@@ -1015,6 +1034,7 @@ if __name__ == "__main__":
     parser.add_argument("--cache-quota", type=int, default=64)
     parser.add_argument("--breakdown-csv", type=str, default="out.csv")
     parser.add_argument("--cachehit-csv", type=str, default="cache.csv")
+    parser.add_argument("--cache-replace-policy", type=str, default="FIFO")
     args = parser.parse_args()
 
     main(
@@ -1028,5 +1048,6 @@ if __name__ == "__main__":
         args.cache_nways,
         args.cache_quota,
         args.breakdown_csv,
-        args.cachehit_csv
+        args.cachehit_csv,
+        args.cache_replace_policy
     )
