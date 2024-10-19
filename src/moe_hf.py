@@ -714,7 +714,7 @@ class MoeLayer(nn.Module):
         weights = F.softmax(weights, dim=1, dtype=torch.float).to(inputs.dtype)
         results = torch.zeros_like(inputs)
 
-        mode = 0
+        mode = 3
         if results.shape[0] == 1:
             if mode == 0:
                 st = time.time()
