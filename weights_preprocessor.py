@@ -11,12 +11,13 @@ import torch
 
 class WeightsPreprocessor:
 
-    def __init__(self, input_path: str, output_path: str, hf: bool, attention_bias: bool) -> None:
+    def __init__(self, input_path: str, output_path: str, hf: bool) -> None:
         self.input_path = Path(input_path)
         self.output_path = Path(output_path)
         self.hf = hf
         self.config = None
-        self.attention_bias = attention_bias
+        # self.attention_bias = attention_bias
+        # self.lm_head_bias
 
     def get_hf_model_configs(self):
         try:
@@ -59,6 +60,14 @@ class WeightsPreprocessor:
         }
         if self.config["attention_bias"]:
             conf["attention_bias"] = True
+            self.attention_bias = True
+        else:
+            self.attention_bias = False
+        if self.config["lm_head_bias"]:
+            conf["lm_head_bias"] = True
+            self.lm_head_bias = True
+        else:
+            self.lm_head_bias = False
         if "rope_scaling" in self.config:
             conf["rope_scaling"] = {
                 "short_factor": self.config["rope_scaling"]["short_factor"],
@@ -93,7 +102,7 @@ class WeightsPreprocessor:
             "norm.weight": ws.pop("model.norm.weight"),
             "output.weight": ws.pop("lm_head.weight"),
         }
-        if self.attention_bias:
+        if self.lm_head_bias:
             non_experts["norm.bias"] = ws.pop("model.norm.bias")
             non_experts["output.bias"] = ws.pop("lm_head.bias")
         for li in range(self.config["num_hidden_layers"]):
@@ -181,11 +190,10 @@ if __name__ == "__main__":
     parser.add_argument("--input-path", type=str)
     parser.add_argument("--output-path", type=str)
     parser.add_argument("--hf", action="store_true")  # uses pth weights by default
-    parser.add_argument("--bias", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
     weights_preprocessor = WeightsPreprocessor(
-        args.input_path, args.output_path, args.hf, args.bias
+        args.input_path, args.output_path, args.hf
     )
     weights_preprocessor.start()

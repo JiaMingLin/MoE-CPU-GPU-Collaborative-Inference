@@ -274,6 +274,7 @@ class ModelArgs:
     vocab_size: int
     rope_theta: float
     moe: dict
+    lm_head_bias: bool = False
     attention_bias: bool = False
     rope_scaling: dict = None
 
@@ -849,8 +850,8 @@ class Transformer(nn.Module):
         self.args = args
         self._precomputed_freqs_cis: torch.Tensor = None
         self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim)
-        self.norm = RMSNorm(args.dim, eps=args.norm_eps, bias=args.attention_bias)
-        self.output = nn.Linear(args.dim, args.vocab_size, bias=args.attention_bias)
+        self.norm = RMSNorm(args.dim, eps=args.norm_eps, bias=args.lm_head_bias)
+        self.output = nn.Linear(args.dim, args.vocab_size, bias=args.lm_head_bias)
         self.layers = nn.ModuleDict(
             {
                 str(li): TransformerBlock(args=args, li=li, experts=experts)
