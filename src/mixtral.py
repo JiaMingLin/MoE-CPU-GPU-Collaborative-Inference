@@ -563,37 +563,38 @@ class Experts:
                    quota: int,
                    replacement_policy: str, # FIFO or LRU
                    device="cuda") -> None:
-        single_expert_shape = list(self.ws[f"{0}.{0}"].shape)
-        for i in range(32):
-            for j in range(8):
-                self.ws[f"{i}.{j}"] = self.ws[f"{i}.{j}"].pin_memory()
         self.quota = quota
         self.max_quota = quota
-        
-        self.nblocks = cache_nblock
-        self.nways = cache_nway
-        self.cache_shape = tuple([cache_nblock, cache_nway] + single_expert_shape)
+        if cache_nblock != 0:
+            single_expert_shape = list(self.ws[f"{0}.{0}"].shape)
+            for i in range(32):
+                for j in range(8):
+                    self.ws[f"{i}.{j}"] = self.ws[f"{i}.{j}"].pin_memory()
+            
+            self.nblocks = cache_nblock
+            self.nways = cache_nway
+            self.cache_shape = tuple([cache_nblock, cache_nway] + single_expert_shape)
 
-        self.cache_tag = torch.zeros((cache_nblock, cache_nway), dtype=torch.int8, device="cpu")
-        self.cache_valid = torch.zeros((cache_nblock, cache_nway), dtype=torch.int8, device="cpu")
-        print(f"Cache shape: {self.cache_shape}")
+            self.cache_tag = torch.zeros((cache_nblock, cache_nway), dtype=torch.int8, device="cpu")
+            self.cache_valid = torch.zeros((cache_nblock, cache_nway), dtype=torch.int8, device="cpu")
+            print(f"Cache shape: {self.cache_shape}")
 
-        self.replacement_policy = replacement_policy
+            self.replacement_policy = replacement_policy
 
-        self.cache_FIFO = []
-        self.cache_LRU = []
-        self.cuda_stream = torch.cuda.Stream(device="cuda")
-        self.cache_device = device
-        with torch.cuda.stream(self.cuda_stream):
-            self.cache = torch.empty(self.cache_shape, dtype=torch.bfloat16, device=self.cache_device)
-        for i in range(self.nblocks):
-            push_list_FIFO = []
-            push_list_LRU = []
-            for j in range(self.nways):
-                push_list_FIFO.append(j)
-                push_list_LRU.append(0)
-            self.cache_FIFO.append(push_list_FIFO)
-            self.cache_LRU.append(push_list_LRU)
+            self.cache_FIFO = []
+            self.cache_LRU = []
+            self.cuda_stream = torch.cuda.Stream(device="cuda")
+            self.cache_device = device
+            with torch.cuda.stream(self.cuda_stream):
+                self.cache = torch.empty(self.cache_shape, dtype=torch.bfloat16, device=self.cache_device)
+            for i in range(self.nblocks):
+                push_list_FIFO = []
+                push_list_LRU = []
+                for j in range(self.nways):
+                    push_list_FIFO.append(j)
+                    push_list_LRU.append(0)
+                self.cache_FIFO.append(push_list_FIFO)
+                self.cache_LRU.append(push_list_LRU)
 
     
     def pop_cache(self, li: int) -> None:
@@ -1148,8 +1149,8 @@ if __name__ == "__main__":
     parser.add_argument("--n-prompts", type=int)
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--hide-resp", action="store_true")
-    parser.add_argument("--cache-nblocks", type=int, default=32)
-    parser.add_argument("--cache-nways", type=int, default=2)
+    parser.add_argument("--cache-nblocks", type=int, default=0)
+    parser.add_argument("--cache-nways", type=int, default=0)
     parser.add_argument("--cache-quota", type=int, default=64)
     parser.add_argument("--breakdown-csv", type=str, default="out.csv")
     parser.add_argument("--cachehit-csv", type=str, default="cache.csv")
