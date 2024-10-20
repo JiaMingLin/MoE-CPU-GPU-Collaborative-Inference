@@ -274,6 +274,7 @@ class ModelArgs:
     vocab_size: int
     rope_theta: float
     moe: dict
+    max_position_embeddings: int = 128_000
     lm_head_bias: bool = False
     attention_bias: bool = False
     rope_scaling: dict = None
@@ -876,8 +877,9 @@ class Transformer(nn.Module):
         if self._precomputed_freqs_cis is None:
             # default to 10**6
             theta = self.args.rope_theta or 1000000.0
+            max_position_embeddings = self.args.max_position_embeddings
             self._precomputed_freqs_cis = precompute_freqs_cis(
-                self.args.head_dim, 128_000, theta, self.args.rope_scaling
+                self.args.head_dim, max_position_embeddings, theta, self.args.rope_scaling
             )
 
         if self._precomputed_freqs_cis.device != self.device:
@@ -942,11 +944,15 @@ class Transformer(nn.Module):
 
         non_experts = torch.load(
             model_path / "non-experts.pt",
+            weights_only=True,
             map_location=gpu,
             mmap=True,
         )
         experts = torch.load(
-            model_path / "experts.pt", map_location=torch.device("cpu"), mmap=True
+            model_path / "experts.pt",
+            weights_only=True,
+            map_location=torch.device("cpu"),
+            mmap=True
         )
         exp = Experts(experts)
         

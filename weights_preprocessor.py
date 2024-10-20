@@ -73,6 +73,7 @@ class WeightsPreprocessor:
                 "short_factor": self.config["rope_scaling"]["short_factor"],
                 "mscale": self.config["rope_scaling"]["short_mscale"],
             }
+        conf["max_position_embeddings"] = self.config["max_position_embeddings"]
         with open(self.output_path / "params.json", "w") as f:
             json.dump(conf, f)
     def process_hf_experts(self, ws: dict) -> None:
