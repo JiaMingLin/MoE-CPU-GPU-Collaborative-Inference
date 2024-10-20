@@ -4,8 +4,10 @@ import glob
 import numpy as np
 import pandas as pd
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 
+# mpl.rcParams['hatch.linewidth'] = 0.1  # previous pdf hatch linewidth
 
 def make_output():
     output_dir = 'output'
@@ -148,12 +150,20 @@ if __name__ == '__main__':
     df_plot = df_plot.drop(columns=['Nblocks'])
 
     # Plotting
-    fig, ax = plt.subplots(figsize=(12, 8))
+    # use greyscale seaborn
+    fig, ax = plt.subplots(figsize=(20, 7))
+
+    # increase font size
+    plt.rcParams.update({'font.size': plt.rcParams['font.size'] * 1.3})
 
     # Create a bar chart
-    bar_width = 0.7
+    bar_width = 0.9
     positions = np.arange(len(df_plot['OMP_NUM_THREADS'].unique()))
     pos_len = len(df_plot[df_plot['Cache_Policy'] == cache_policy_list[0]]['(Nblocks,Nways)'].unique()) + 1
+
+    # Define a color palette
+    colors = plt.cm.Spectral(np.linspace(0, 1, len(df_plot['(Nblocks,Nways)'].unique()) + 1))
+
     for i, cache_policy in enumerate(["LRU"]):
         subset = df_plot[df_plot['Cache_Policy'] == cache_policy]
 
@@ -166,7 +176,13 @@ if __name__ == '__main__':
             x_position, 
             tmp, 
             width=bar_width / pos_len, 
+            color=colors[0],
+            edgecolor='black',  # Add border color
             label=f'CPU only')
+        # Show the value on top of the bar
+        for x, y in zip(x_position, tmp):
+            ax.text(x, y, f'{y:.1f}', ha='center', va='bottom', fontsize=10)
+            # label=f'{cache_policy} - {nblocks}')
 
         for j, nblocks in enumerate(subset['(Nblocks,Nways)'].unique()):
             jj = j + 1
@@ -179,30 +195,42 @@ if __name__ == '__main__':
                 x_position, 
                 tmp, 
                 width=bar_width / pos_len, 
-                label=f'{nblocks}')
+                color=colors[jj % len(colors)],
+                edgecolor='black',  # Add border color
+                label=f'Cache: {nblocks}')
+            # Show the value on top of the bar
+            for x, y in zip(x_position, tmp):
+                ax.text(x, y, f'{y:.1f}', ha='center', va='bottom', fontsize=10)
                 # label=f'{cache_policy} - {nblocks}')
+
+    fs = 15
+    # Draw a horizontal line for the GPU throughput
+    ax.axhline(y=round(gpu_token_throughput, 2), color='r', linestyle='--', label='GPU Offloading')
 
     # Add labels and title
     ax.set_xticks(positions)
-    ax.set_xticklabels(omp_num_thread_list)
-    ax.set_xlabel('OMP_NUM_THREADS')
-    ax.set_ylabel('Throughput (tokens/s)')
-    ax.set_title('Token Generation Throughput by OMP_NUM_THREADS, Cache NBlocks')
-    ax.legend(title='(Nblocks,Nways)')
+    ax.set_xticklabels(omp_num_thread_list, fontsize=fs)
+    ax.set_xlabel('OMP_NUM_THREADS', fontsize=fs)
+    ax.set_ylabel('Throughput (tokens/s)', fontsize=fs)
+    ax.set_title('Token Generation Throughput by OMP_NUM_THREADS, Cache NBlocks', fontsize=fs)
+    ax.legend(title='Cache: (Nblocks,Nways)', fontsize=fs)
     # Set y-axis range
     ax.set_ylim(0, 5)
     
-    # Draw a horizontal line for the GPU throughput
-    ax.axhline(y=round(gpu_token_throughput, 2), color='r', linestyle='--', label='GPU Offloading')
+
     # Set the label of y-axis by 0.5 each
     ax.set_yticks(np.arange(0, 5.5, 0.5))
+    ax.set_yticklabels(ax.get_yticks(), fontsize=fs)
 
 
     # Show the plot
     # plt.show()
     # Save the plot
     make_output()
-    plt.savefig(os.path.join('output', 'cpu_vs_gpu_throughput.pdf'), format='pdf', bbox_inches='tight')
+    plt.savefig(os.path.join('output', 'cpu_vs_gpu_throughput.pdf'),
+                format='pdf',
+                bbox_inches='tight',
+                dpi=600)
 
     print(f'CPU Token Gen Throughput: {cpu_token_throughput}')
     print(f'GPU Token Gen Throughput: {gpu_token_throughput}')
