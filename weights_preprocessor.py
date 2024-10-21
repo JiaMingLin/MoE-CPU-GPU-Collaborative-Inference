@@ -29,25 +29,27 @@ class WeightsPreprocessor:
 
     def load_hf_weights(self) -> dict:
         try:
-            with open(self.input_path / "model.safetensors.index.json", "r") as f:
+            with open(self.input_path / "model.safetensors.index.json",
+                      "r") as f:
                 metadata = json.load(f)
         except FileNotFoundError:
             logging.error(
-                f"model.safetensors.index.json not found in {self.input_path}"
-            )
+                f"model.safetensors.index.json not found in {self.input_path}")
             raise
 
         ws = {}
         for filename in set(metadata["weight_map"].values()):
             ws.update(
-                safetensors.torch.load_file(self.input_path / filename, device="cpu")
-            )
+                safetensors.torch.load_file(self.input_path / filename,
+                                            device="cpu"))
         return ws
+
     def process_hf_config(self) -> None:
         conf = {}
         conf["dim"] = self.config["hidden_size"]
         conf["n_layers"] = self.config["num_hidden_layers"]
-        conf["head_dim"] = self.config["hidden_size"] // self.config["num_attention_heads"]
+        conf["head_dim"] = self.config["hidden_size"] // self.config[
+            "num_attention_heads"]
         conf["hidden_dim"] = self.config["intermediate_size"]
         conf["n_heads"] = self.config["num_attention_heads"]
         conf["n_kv_heads"] = self.config["num_key_value_heads"]
@@ -56,7 +58,7 @@ class WeightsPreprocessor:
         conf["rope_theta"] = self.config["rope_theta"]
         conf["moe"] = {
             "num_experts_per_tok": self.config["num_experts_per_tok"],
-            "num_experts":  self.config["num_local_experts"],
+            "num_experts": self.config["num_local_experts"],
         }
         if self.config["attention_bias"]:
             conf["attention_bias"] = True
@@ -73,9 +75,11 @@ class WeightsPreprocessor:
                 "short_factor": self.config["rope_scaling"]["short_factor"],
                 "mscale": self.config["rope_scaling"]["short_mscale"],
             }
-        conf["max_position_embeddings"] = self.config["max_position_embeddings"]
+        conf["max_position_embeddings"] = self.config[
+            "max_position_embeddings"]
         with open(self.output_path / "params.json", "w") as f:
             json.dump(conf, f)
+
     def process_hf_experts(self, ws: dict) -> None:
         experts = {}
         for li in range(self.config["num_hidden_layers"]):
@@ -110,29 +114,22 @@ class WeightsPreprocessor:
             prefix = f"model.layers.{li}"
             pfx = prefix[6:]
             non_experts[f"{pfx}.attention_norm.weight"] = ws.pop(
-                f"{prefix}.input_layernorm.weight"
-            )
+                f"{prefix}.input_layernorm.weight")
             non_experts[f"{pfx}.ffn_norm.weight"] = ws.pop(
-                f"{prefix}.post_attention_layernorm.weight"
-            )
+                f"{prefix}.post_attention_layernorm.weight")
             if self.attention_bias:
                 non_experts[f"{pfx}.attention_norm.bias"] = ws.pop(
-                    f"{prefix}.input_layernorm.bias"
-                )
+                    f"{prefix}.input_layernorm.bias")
                 non_experts[f"{pfx}.ffn_norm.bias"] = ws.pop(
-                    f"{prefix}.post_attention_layernorm.bias"
-                )
+                    f"{prefix}.post_attention_layernorm.bias")
             non_experts[f"{pfx}.feed_forward.gate.weight"] = ws.pop(
-                f"{prefix}.block_sparse_moe.gate.weight"
-            )
+                f"{prefix}.block_sparse_moe.gate.weight")
             for pi in ["q", "k", "v", "o"]:
                 non_experts[f"{pfx}.attention.w{pi}.weight"] = ws.pop(
-                    f"{prefix}.self_attn.{pi}_proj.weight"
-                )
+                    f"{prefix}.self_attn.{pi}_proj.weight")
                 if self.attention_bias:
                     non_experts[f"{pfx}.attention.w{pi}.bias"] = ws.pop(
-                        f"{prefix}.self_attn.{pi}_proj.bias"
-                    )
+                        f"{prefix}.self_attn.{pi}_proj.bias")
 
         # safetensors.torch.save_file(
         #     non_experts, self.output_path / f"non-experts.safetensors"
@@ -190,11 +187,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-path", type=str)
     parser.add_argument("--output-path", type=str)
-    parser.add_argument("--hf", action="store_true")  # uses pth weights by default
+    parser.add_argument("--hf",
+                        action="store_true")  # uses pth weights by default
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    weights_preprocessor = WeightsPreprocessor(
-        args.input_path, args.output_path, args.hf
-    )
+    weights_preprocessor = WeightsPreprocessor(args.input_path,
+                                               args.output_path, args.hf)
     weights_preprocessor.start()
