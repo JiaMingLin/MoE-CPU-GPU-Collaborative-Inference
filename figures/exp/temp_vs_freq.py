@@ -36,22 +36,11 @@ def get_cpu_tmp_freq(path: str):
     return df
 
 
-if __name__ == '__main__':
-    # argv input: --omp
-    # parse argv
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--omp', type=int, help='Number of OpenMP threads')
-    # parser.add_argument('--collab-file',
-    #                     type=str,
-    #                     help='Best collab configuration to be compared with')
-    args = parser.parse_args()
-
-    omp = args.omp
-    WINDOW_SIZE = 5  # You can adjust the window size as needed
+def draw(omp: int, show_plot=False, windows_size: int = 10):
     df1 = get_cpu_tmp_freq(os.path.join('../../logs/OMP_logs', f'OMP_{omp}'))
-    df1 = df1.rolling(window=WINDOW_SIZE).mean()
+    df1['Temperature'] = df1['Temperature'].rolling(window=windows_size).mean()
     # df2 = get_cpu_tmp_freq(args.collab_file)
-    # df2 = df2.rolling(window=WINDOW_SIZE).mean()
+    # df2 = df2.rolling(window=windows_size).mean()
     # Plot the data
     fig, ax1 = plt.subplots(figsize=(10, 5))
 
@@ -80,7 +69,29 @@ if __name__ == '__main__':
     fig.tight_layout()  # Adjust layout to make room for both y-axes
 
     output_dir = make_output()
-    plt.savefig(os.path.join(output_dir, f'temperature_OMP_{omp}.pdf'),
+    plt.savefig(os.path.join(output_dir, f'temp_vs_freq_OMP_{omp}.pdf'),
                 format='pdf',
                 bbox_inches='tight')
-    plt.show()
+    if show_plot:
+        plt.show()
+
+
+if __name__ == '__main__':
+    # argv input: --omp
+    # parse argv
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--omp',
+                        type=int,
+                        help='Number of OpenMP threads',
+                        default=0)
+    # parser.add_argument('--collab-file',
+    #                     type=str,
+    #                     help='Best collab configuration to be compared with')
+    args = parser.parse_args()
+
+    omp = args.omp
+    if omp == 0:
+        for i in [1, 2, 4, 8, 16, 24]:
+            draw(i)
+    else:
+        draw(omp, show_plot=True)

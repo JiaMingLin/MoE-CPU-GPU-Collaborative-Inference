@@ -78,34 +78,25 @@ def get_collab_token_gen_throughput(path: str, omp_num_threads: int):
     return df
 
 
-if __name__ == '__main__':
-    # argv input: --omp
-    # parse argv
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--omp', type=int, help='Number of OpenMP threads')
-    args = parser.parse_args()
-
-    omp = args.omp
-
+def draw(omp: int, show_plot=False, windows_size: int = 10):
     df_cpu = get_cpu_or_gpu_only_time('../../logs', omp)
     df_gpu = get_cpu_or_gpu_only_time('../../logs')
     df_collab = get_collab_token_gen_throughput('../../logs/LRU', omp)
 
     # Apply a rolling mean to smooth the data
-    WINDOW_SIZE = 5  # You can adjust the window size as needed
     LIMIT_ITEMS = 1800  # Limit the number of items to plot
     df_cpu['Generation time'] = df_cpu['Generation time'].rolling(
-        window=WINDOW_SIZE).mean()[:LIMIT_ITEMS] * 1e3
+        window=windows_size).mean()[:LIMIT_ITEMS] * 1e3
     df_cpu['Temperature'] = df_cpu['Temperature'].rolling(
-        window=WINDOW_SIZE).mean()[:LIMIT_ITEMS]
+        window=windows_size).mean()[:LIMIT_ITEMS]
     df_gpu['Generation time'] = df_gpu['Generation time'].rolling(
-        window=WINDOW_SIZE).mean()[:LIMIT_ITEMS] * 1e3
+        window=windows_size).mean()[:LIMIT_ITEMS] * 1e3
     df_collab['Temperature'] = df_collab['Temperature'].rolling(
-        window=WINDOW_SIZE).mean()[:LIMIT_ITEMS]
+        window=windows_size).mean()[:LIMIT_ITEMS]
     df_collab['Generation time'] = df_collab['Generation time'].rolling(
-        window=WINDOW_SIZE).mean()[:LIMIT_ITEMS] * 1e3
+        window=windows_size).mean()[:LIMIT_ITEMS] * 1e3
     df_collab['Temperature'] = df_collab['Temperature'].rolling(
-        window=WINDOW_SIZE).mean()[:LIMIT_ITEMS]
+        window=windows_size).mean()[:LIMIT_ITEMS]
 
     fig, ax1 = plt.subplots(figsize=(10, 3))
 
@@ -138,6 +129,7 @@ if __name__ == '__main__':
              linestyle='--')
     ax2.set_ylabel('Temperature (°C)', color='tab:red')
     ax2.tick_params(axis='y', labelcolor='tab:red')
+    # ax2.set_ylim(55, 80)
     ax2.legend(loc="upper center")
     ax2.legend(bbox_to_anchor=(0.05, 0.98, 1, 0.2), loc="upper right", ncol=2)
 
@@ -145,4 +137,23 @@ if __name__ == '__main__':
     fig.savefig(os.path.join(output_dir, f'gen_time_history_OMP_{omp}.pdf'),
                 bbox_inches='tight',
                 format='pdf')
-    plt.show()
+    if show_plot:
+        plt.show()
+
+
+if __name__ == '__main__':
+    # argv input: --omp
+    # parse argv
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--omp',
+                        type=int,
+                        help='Number of OpenMP threads',
+                        default=0)
+    args = parser.parse_args()
+
+    omp = args.omp
+    if omp == 0:
+        for i in [2, 4, 8, 16, 24]:
+            draw(i)
+    else:
+        draw(omp, show_plot=True)
