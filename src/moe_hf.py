@@ -757,17 +757,97 @@ class MoeLayer(nn.Module):
         super().__init__()
         self.num_experts: int = args.moe["num_experts"]
         self.num_experts_per_tok: int = args.moe["num_experts_per_tok"]
+        if "sparsemixer" in args.moe:
+            self.use_sparsemixer = True
+            self.router_jitter_noise = args.moe['sparsemixer']['router_jitter_noise']
+        else:
+            self.use_sparsemixer = False
         self.li = li
         self.gate = gate
         self.experts = experts
+
+    
+    def sparsemixer(self, scores, jitter_eps, top_k=2):
+        """
+        Sparse mixer function to select top-k experts and compute multipliers.
+        Based on the paper: https://arxiv.org/pdf/2409.12136
+        We first replace the TopK(·) function as random sampling of discrete variables
+        in model training. Then, following Liu et al. (2023a) and Liu et al. (2023b), we apply Heun's
+        third order method to approximate the expert routing gradient and construct a modified
+        back-propagation to give a mathematically sound gradient estimation for expert routing.
+
+        Args:
+            scores (torch.Tensor): Input scores tensor.
+            jitter_eps (float): Jitter epsilon for numerical stability.
+            top_k (int): Number of top experts to select.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Multiplier and selected experts tensors.
+        """
+        if top_k != 2:
+            raise ValueError("top_k must be equal to 2")
+
+        # first expert
+
+        with torch.no_grad():
+            # Compute mask for sparsity
+            mask_logits_threshold, max_ind = scores.max(dim=-1, keepdim=True)
+            factor = scores.abs().clamp(min=mask_logits_threshold)
+            mask_logits_threshold = ((mask_logits_threshold - scores) / factor) > (2 * jitter_eps)
+
+        # Apply mask
+        masked_gates = scores.masked_fill(mask_logits_threshold, float("-inf"))
+        selected_experts = max_ind
+
+        # Compute scores for gradients
+        masked_gates = torch.softmax(masked_gates, dim=-1)
+        multiplier_o = masked_gates.gather(dim=-1, index=selected_experts)
+
+        multiplier = multiplier_o
+
+        # Masked out first expert
+        masked_scores = torch.scatter(
+            scores,
+            -1,
+            selected_experts,
+            float("-inf"),
+        )
+        with torch.no_grad():
+            # Compute mask for sparsity
+            mask_logits_threshold, max_ind = masked_scores.max(dim=-1, keepdim=True)
+            factor = scores.abs().clamp(min=mask_logits_threshold)
+            mask_logits_threshold = ((mask_logits_threshold - scores) / factor) > (2 * jitter_eps)
+
+        # Apply mask
+        masked_gates_top2 = masked_scores.masked_fill(mask_logits_threshold, float("-inf"))
+        selected_experts_top2 = max_ind
+        # Compute scores for gradients
+        masked_gates_top2 = torch.softmax(masked_gates_top2, dim=-1)
+        multiplier_top2_o = masked_gates_top2.gather(dim=-1, index=selected_experts_top2)
+
+        multiplier_top2 = multiplier_top2_o
+
+        multiplier = torch.concat((multiplier, multiplier_top2), dim=-1)
+        selected_experts = torch.concat((selected_experts, selected_experts_top2), dim=-1)
+
+        return (
+            multiplier,
+            selected_experts,
+        )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         global EXPERT_CHOICES
         global CUR_TOKEN_CHOICES
         gate_logits = self.gate(inputs)
-        weights, selected_experts = torch.topk(gate_logits,
-                                               self.num_experts_per_tok)
-        weights = F.softmax(weights, dim=1, dtype=torch.float).to(inputs.dtype)
+        if self.use_sparsemixer:
+            weights, selected_experts = self.sparsemixer(
+                gate_logits,
+                jitter_eps=self.router_jitter_noise,
+            )
+        else:
+            weights, selected_experts = torch.topk(gate_logits,
+                                                self.num_experts_per_tok)
+            weights = F.softmax(weights, dim=1, dtype=torch.float).to(inputs.dtype)
         results = torch.zeros_like(inputs)
 
         mode = 3
@@ -885,8 +965,12 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.attention = Attention(args)
         bias = args.attention_bias
+        # Mistral 8x7b
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps, bias=bias)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps, bias=bias)
+        # Phi-3.5-MoE
+        # self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps, bias=bias, elementwise_affine=True)
+        # self.ffn_norm = nn.LayerNorm(args.dim, eps=args.norm_eps, bias=bias, elementwise_affine=True)
         self.feed_forward = MoeLayer(
             args=args,
             li=li,
