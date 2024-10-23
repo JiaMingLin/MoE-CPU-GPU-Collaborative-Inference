@@ -1346,7 +1346,7 @@ def main(model_path: str, prompt: str, prompt_path: str, n_prompts: int,
         max_tokens=max_tokens,
         max_batch_size=len(prompts),
         eos_id=tokenizer.eos_token_id,
-        profile=False,
+        profile=True,
     )
     print("=" * 20)
     print("PERFORMANCE BREAKDOWN\n")
