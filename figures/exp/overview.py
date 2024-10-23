@@ -38,10 +38,14 @@ def get_gpu_token_gen_throughput(path: str, nth: int):
         df['GPU'] = pd.DataFrame(data[1:], columns=data[0])
 
         # Get the nth index from the DataFrame
+        # get len of [
+        # 'GPU',
+        # df['GPU']
+        len_df = len(df['GPU'])
         tokenGenThroughput.append([
-            'GPU',
-            df['GPU'].iloc[nth -
-                           1]['Accumulated Generation Throughput (tokens/s)']
+            'GPU', df['GPU'].iloc[min(
+                len_df - 1,
+                nth - 1)]['Accumulated Generation Throughput (tokens/s)']
         ])
 
     return float(tokenGenThroughput[0][1])
@@ -68,9 +72,11 @@ def get_cpuonly_token_gen_throughput(path: str, nth: int):
         df[omp_number] = pd.DataFrame(data[1:], columns=data[0])
 
         # Get the nth index from the DataFrame
+        df_len = len(df[omp_number])
         tokenGenThroughput.append([
-            omp_number, df[omp_number].iloc[nth - 1]
-            ['Accumulated Generation Throughput (tokens/s)']
+            omp_number, df[omp_number].iloc[min(
+                df_len - 1,
+                nth - 1)]['Accumulated Generation Throughput (tokens/s)']
         ])
 
     # sort by OMP number
