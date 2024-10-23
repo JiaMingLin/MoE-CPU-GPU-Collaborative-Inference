@@ -527,6 +527,52 @@ class BufferCache:
             seqlens=seqlens,
         )
 
+class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
+
+    def __init__(self, dim, config):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = config.max_position_embeddings
+        self.base = config.rope_theta
+        self.short_factor = config.rope_scaling["short_factor"]
+        # self.long_factor = config.rope_scaling["long_factor"]
+        self.short_mscale = config.rope_scaling["mscale"]
+        # self.long_mscale = config.rope_scaling["long_mscale"]
+        # self.original_max_position_embeddings = config.rope_scaling["original_max_position_embeddings"]
+
+    def forward(self, x, seq_len=None):
+        if seq_len is None:
+            seq_len = x.shape[-2]
+
+        # if seq_len > self.original_max_position_embeddings:
+        #     rescale_factors = torch.tensor(self.long_factor, dtype=torch.float32, device=x.device)
+        #     mscale = self.long_mscale
+        # else:
+        rescale_factors = torch.tensor(self.short_factor, dtype=torch.float32, device=x.device)
+        mscale = self.short_mscale
+        assert rescale_factors.shape == (self.dim // 2, ), \
+            f"misaligned shape for LongRoPE rescale factors: {rescale_factors.shape}"
+
+        inv_freq = 1.0 / (rescale_factors * (self.base ** (torch.arange(0, self.dim, 2).float().to(x.device) / self.dim)))
+
+        t = torch.arange(seq_len, device=x.device, dtype=torch.float32)
+        freqs = torch.outer(t, inv_freq)
+
+        emb = torch.cat((freqs, freqs), dim=-1)
+        return (emb.cos() * mscale).to(x.dtype), (emb.sin() * mscale).to(x.dtype)
+
+def rotate_half(x):
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    cos = cos[position_ids].unsqueeze(unsqueeze_dim)
+    sin = sin[position_ids].unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+
 
 class Attention(nn.Module):
 
@@ -552,10 +598,13 @@ class Attention(nn.Module):
                             bias=bias)
         self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=bias)
 
+        self.rotary_emb = Phi3LongRoPEScaledRotaryEmbedding(self.head_dim, 
+                                                            self.args)
+
     def forward(
         self,
         x: torch.Tensor,
-        freqs_cis: torch.Tensor,
+        positions: torch.Tensor,
         cache: Optional[CacheView],
     ) -> torch.Tensor:
         seqlen_sum, _ = x.shape
@@ -564,7 +613,10 @@ class Attention(nn.Module):
         xq = xq.view(seqlen_sum, self.n_heads, self.head_dim)
         xk = xk.view(seqlen_sum, self.n_kv_heads, self.head_dim)
         xv = xv.view(seqlen_sum, self.n_kv_heads, self.head_dim)
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+
+        kv_seq_len = xk.shape[0] + (0 if cache is None else cache.key.shape[1])
+        cos, sin = self.rotary_emb(xv, seq_len=kv_seq_len)
+        xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin, position_ids=positions)
 
         if cache is None:
             key, val = xk, xv
@@ -584,8 +636,14 @@ class Attention(nn.Module):
 
         # xformers requires (B=1, S, H, D)
         xq, key, val = xq[None, ...], key[None, ...], val[None, ...]
+
+        # xq = xq.to(dtype=torch.float16)
+        # key = key.to(dtype=torch.float16)
+        # val = val.to(dtype=torch.float16)
         output = memory_efficient_attention(
             xq, key, val, None if cache is None else cache.mask)
+        # output = output.to(dtype=torch.bfloat16)
+
         output = output.view(seqlen_sum, self.n_heads * self.head_dim)
 
         assert isinstance(output, torch.Tensor)
@@ -978,10 +1036,10 @@ class TransformerBlock(nn.Module):
             experts=experts,
         )
 
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor,
+    def forward(self, x: torch.Tensor, positions: torch.Tensor,
                 cache: Optional[CacheView]) -> torch.Tensor:
         st = time.time()
-        r = self.attention.forward(self.attention_norm(x), freqs_cis, cache)
+        r = self.attention.forward(self.attention_norm(x), positions, cache)
         h = x + r
         ed = time.time()
         atten_time = ed - st
@@ -1051,7 +1109,6 @@ class Transformer(nn.Module):
 
         input_metadata = cache.get_input_metadata(seqlens)
         h = self.tok_embeddings(input_ids)
-        freqs_cis = self.freqs_cis[input_metadata.positions]
 
         atten_time_list = []
         ffn_comm_list = []
@@ -1062,7 +1119,7 @@ class Transformer(nn.Module):
             cache_view = cache.get_view(li, input_metadata)
             with nvtx.annotate(f"block{li}", color="red"):
                 h, atten_time, ffn_comm, ffn_compute, cache_hit_count = self.layers[
-                    str(li)](h, freqs_cis, cache_view)
+                    str(li)](h, input_metadata.positions, cache_view)
             atten_time_list.append(atten_time)
             ffn_comm_list.append(ffn_comm)
             ffn_compute_list.append(ffn_compute)
@@ -1289,7 +1346,7 @@ def main(model_path: str, prompt: str, prompt_path: str, n_prompts: int,
         max_tokens=max_tokens,
         max_batch_size=len(prompts),
         eos_id=tokenizer.eos_token_id,
-        profile=True,
+        profile=False,
     )
     print("=" * 20)
     print("PERFORMANCE BREAKDOWN\n")
