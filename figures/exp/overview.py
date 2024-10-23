@@ -1,6 +1,7 @@
 import os
 import csv
 import glob
+import argparse
 import numpy as np
 import pandas as pd
 
@@ -114,16 +115,21 @@ def get_cpu_token_gen_throughput(path: str, omp_num_thread: int,
         df[cache_nways] = pd.DataFrame(data[1:nth + 1], columns=data[0])
 
         # Get the nth index from the DataFrame
+        idx = min(nth - 1, len(df[cache_nways]) - 1)
+        # print(f"Index: {idx}, {file}, len: {len(df[cache_nways])}")
         tokenGenThroughput.append([
-            (cache_nblocks, cache_nways), df[cache_nways].iloc[
-                nth - 1]['Accumulated Generation Throughput (tokens/s)']
+            (cache_nblocks, cache_nways), df[cache_nways].iloc[idx]
+            ['Accumulated Generation Throughput (tokens/s)']
         ])
 
     return tokenGenThroughput, df
 
 
 if __name__ == '__main__':
-    nth = 256
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--nth', type=int, default=128)
+    args = parser.parse_args()
+    nth = args.nth
     log_base_dir = '../../logs/'
     omp_num_thread_list = [1, 2, 4, 8, 16, 24]
     cache_policy_list = ['LRU', 'FIFO']
@@ -264,7 +270,7 @@ if __name__ == '__main__':
     # plt.show()
     # Save the plot
     make_output()
-    plt.savefig(os.path.join('output', 'cpu_vs_gpu_throughput.pdf'),
+    plt.savefig(os.path.join('output', f'cpu_vs_gpu_throughput_{nth}.pdf'),
                 format='pdf',
                 bbox_inches='tight',
                 dpi=600)
