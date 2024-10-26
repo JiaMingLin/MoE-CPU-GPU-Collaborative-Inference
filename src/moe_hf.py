@@ -663,8 +663,9 @@ class Experts:
     # 1. shared across layers
     # 2. weights and computation on CPU
 
-    def __init__(self, ws: dict):
+    def __init__(self, model_args: ModelArgs, ws: dict):
         self.ws = ws
+        self.args = model_args
 
     def init_cache(
             self,
@@ -691,6 +692,7 @@ class Experts:
         self.cache_valid = torch.zeros((cache_nblock, cache_nway),
                                        dtype=torch.int8,
                                        device="cpu")
+        self.cache_valid_cuda_event = []
         print(f"Cache shape: {self.cache_shape}")
 
         self.replacement_policy = replacement_policy
@@ -706,6 +708,7 @@ class Experts:
         for i in range(self.nblocks):
             push_list_FIFO = []
             push_list_LRU = []
+            self.cache_valid_cuda_event.append([None] * self.nways)
             for j in range(self.nways):
                 push_list_FIFO.append(j)
                 push_list_LRU.append(0)
@@ -734,6 +737,7 @@ class Experts:
     def check_data_cpy_finished(self, li: int, i: int) -> bool:
         if self.cache_valid[li][i] == 2:
             # self.cuda_stream[li].synchronize()
+            self.cache_valid_cuda_event[li][i].synchronize()
             self.cache_valid[li][i] = 1
 
     def reset_quota(self) -> None:
@@ -751,7 +755,7 @@ class Experts:
             ]
             if cache_hit[0] != -1 and cache_hit[1] != -1:
                 for i in range(2):
-                    # self.check_data_cpy_finished(li, cache_hit[i])
+                    self.check_data_cpy_finished(li, cache_hit[i])
                     w = self.cache[li, cache_hit[i]]
                     ret_l.append(
                         (nn.functional.silu(x @ w[0].T) * (x @ w[2].T)) @ w[1])
@@ -759,7 +763,10 @@ class Experts:
                 x_cpu = x.to("cpu")
 
                 # self.check_data_cpy_finished(li, cache_hit[i])
-                for i in range(2):
+                order = [0, 1]
+                if cache_hit[1] != -1:
+                    order = [1, 0]
+                for i in order:
                     # CPU compute first, and move expert to GPU
                     if cache_hit[i] == -1:
                         w = self.ws[f"{li}.{ei_list[i]}"]
@@ -776,12 +783,20 @@ class Experts:
                                 self.cache[li, dst_way].copy_(
                                     self.ws[f"{li}.{ei_list[i]}"],
                                     non_blocking=True)
+                                self.cache_valid_cuda_event[li][
+                                    dst_way] = torch.cuda.Event()
+                                self.cache_valid_cuda_event[li][
+                                    dst_way].record(self.cuda_stream)
                                 # self.cache[li, dst_way] = self.ws[f"{li}.{ei_list[i]}"].to(self.cache[li, dst_way].device, non_blocking=True)
                                 # w.to(self.cache[li, dst_way], non_blocking=True)
                     else:
+                        self.check_data_cpy_finished(li, cache_hit[i])
                         w = self.cache[li, cache_hit[i]]
+
                         ret_l.append((nn.functional.silu(x @ w[0].T) *
                                       (x @ w[2].T)) @ w[1])
+                if order[0] == 1:
+                    ret_l = [ret_l[1], ret_l[0]]
             return ret_l, cache_hit
         else:  # cache miss (due to insufficient cache size)
             x_cpu = x.to("cpu")
@@ -1180,7 +1195,7 @@ class Transformer(nn.Module):
                              weights_only=True,
                              map_location=torch.device("cpu"),
                              mmap=True)
-        exp = Experts(experts)
+        exp = Experts(model_args, experts)
 
         with torch.device("meta"):
             model = Transformer(args=model_args, experts=exp)
