@@ -527,6 +527,7 @@ class BufferCache:
             seqlens=seqlens,
         )
 
+
 class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
 
     def __init__(self, dim, config):
@@ -548,23 +549,29 @@ class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
         #     rescale_factors = torch.tensor(self.long_factor, dtype=torch.float32, device=x.device)
         #     mscale = self.long_mscale
         # else:
-        rescale_factors = torch.tensor(self.short_factor, dtype=torch.float32, device=x.device)
+        rescale_factors = torch.tensor(self.short_factor,
+                                       dtype=torch.float32,
+                                       device=x.device)
         mscale = self.short_mscale
         assert rescale_factors.shape == (self.dim // 2, ), \
             f"misaligned shape for LongRoPE rescale factors: {rescale_factors.shape}"
 
-        inv_freq = 1.0 / (rescale_factors * (self.base ** (torch.arange(0, self.dim, 2).float().to(x.device) / self.dim)))
+        inv_freq = 1.0 / (rescale_factors * (self.base**(
+            torch.arange(0, self.dim, 2).float().to(x.device) / self.dim)))
 
         t = torch.arange(seq_len, device=x.device, dtype=torch.float32)
         freqs = torch.outer(t, inv_freq)
 
         emb = torch.cat((freqs, freqs), dim=-1)
-        return (emb.cos() * mscale).to(x.dtype), (emb.sin() * mscale).to(x.dtype)
+        return (emb.cos() * mscale).to(x.dtype), (emb.sin() * mscale).to(
+            x.dtype)
+
 
 def rotate_half(x):
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
+    x1 = x[..., :x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), dim=-1)
+
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     cos = cos[position_ids].unsqueeze(unsqueeze_dim)
@@ -598,8 +605,8 @@ class Attention(nn.Module):
                             bias=bias)
         self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=bias)
 
-        self.rotary_emb = Phi3LongRoPEScaledRotaryEmbedding(self.head_dim, 
-                                                            self.args)
+        self.rotary_emb = Phi3LongRoPEScaledRotaryEmbedding(
+            self.head_dim, self.args)
 
     def forward(
         self,
@@ -667,8 +674,8 @@ class Experts:
             replacement_policy: str,  # FIFO or LRU
             device="cuda") -> None:
         single_expert_shape = list(self.ws[f"{0}.{0}"].shape)
-        for i in range(32):
-            for j in range(8):
+        for i in range(self.args.n_layers):
+            for j in range(self.args.moe["num_experts"]):
                 self.ws[f"{i}.{j}"] = self.ws[f"{i}.{j}"].pin_memory()
         self.quota = quota
         self.max_quota = quota
@@ -817,14 +824,14 @@ class MoeLayer(nn.Module):
         self.num_experts_per_tok: int = args.moe["num_experts_per_tok"]
         if "sparsemixer" in args.moe:
             self.use_sparsemixer = True
-            self.router_jitter_noise = args.moe['sparsemixer']['router_jitter_noise']
+            self.router_jitter_noise = args.moe['sparsemixer'][
+                'router_jitter_noise']
         else:
             self.use_sparsemixer = False
         self.li = li
         self.gate = gate
         self.experts = experts
 
-    
     def sparsemixer(self, scores, jitter_eps, top_k=2):
         """
         Sparse mixer function to select top-k experts and compute multipliers.
@@ -851,7 +858,8 @@ class MoeLayer(nn.Module):
             # Compute mask for sparsity
             mask_logits_threshold, max_ind = scores.max(dim=-1, keepdim=True)
             factor = scores.abs().clamp(min=mask_logits_threshold)
-            mask_logits_threshold = ((mask_logits_threshold - scores) / factor) > (2 * jitter_eps)
+            mask_logits_threshold = ((mask_logits_threshold - scores) /
+                                     factor) > (2 * jitter_eps)
 
         # Apply mask
         masked_gates = scores.masked_fill(mask_logits_threshold, float("-inf"))
@@ -872,21 +880,26 @@ class MoeLayer(nn.Module):
         )
         with torch.no_grad():
             # Compute mask for sparsity
-            mask_logits_threshold, max_ind = masked_scores.max(dim=-1, keepdim=True)
+            mask_logits_threshold, max_ind = masked_scores.max(dim=-1,
+                                                               keepdim=True)
             factor = scores.abs().clamp(min=mask_logits_threshold)
-            mask_logits_threshold = ((mask_logits_threshold - scores) / factor) > (2 * jitter_eps)
+            mask_logits_threshold = ((mask_logits_threshold - scores) /
+                                     factor) > (2 * jitter_eps)
 
         # Apply mask
-        masked_gates_top2 = masked_scores.masked_fill(mask_logits_threshold, float("-inf"))
+        masked_gates_top2 = masked_scores.masked_fill(mask_logits_threshold,
+                                                      float("-inf"))
         selected_experts_top2 = max_ind
         # Compute scores for gradients
         masked_gates_top2 = torch.softmax(masked_gates_top2, dim=-1)
-        multiplier_top2_o = masked_gates_top2.gather(dim=-1, index=selected_experts_top2)
+        multiplier_top2_o = masked_gates_top2.gather(
+            dim=-1, index=selected_experts_top2)
 
         multiplier_top2 = multiplier_top2_o
 
         multiplier = torch.concat((multiplier, multiplier_top2), dim=-1)
-        selected_experts = torch.concat((selected_experts, selected_experts_top2), dim=-1)
+        selected_experts = torch.concat(
+            (selected_experts, selected_experts_top2), dim=-1)
 
         return (
             multiplier,
@@ -904,8 +917,9 @@ class MoeLayer(nn.Module):
             )
         else:
             weights, selected_experts = torch.topk(gate_logits,
-                                                self.num_experts_per_tok)
-            weights = F.softmax(weights, dim=1, dtype=torch.float).to(inputs.dtype)
+                                                   self.num_experts_per_tok)
+            weights = F.softmax(weights, dim=1,
+                                dtype=torch.float).to(inputs.dtype)
         results = torch.zeros_like(inputs)
 
         mode = 3
