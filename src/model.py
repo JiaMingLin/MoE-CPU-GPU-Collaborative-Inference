@@ -12,8 +12,7 @@ import torch.nn.functional as F
 
 from xformers.ops.fmha import memory_efficient_attention  # type: ignore
 from xformers.ops.fmha.attn_bias import (  # type: ignore
-    AttentionBias,
-    BlockDiagonalCausalMask,
+    AttentionBias, BlockDiagonalCausalMask,
     BlockDiagonalCausalWithOffsetPaddedKeysMask,
 )
 
@@ -22,6 +21,7 @@ import nvtx
 
 MIXTRAL_MODEL_TYPE = "MixtralForCausalLM"
 PHI_MODEL_TYPE = "PhiMoEForCausalLM"
+
 
 @dataclass
 class ModelArgs:
@@ -72,7 +72,6 @@ class CacheInputMetadata:
     prefill: bool
     mask: AttentionBias
     seqlens: List[int]
-
 
 
 class CacheView:
@@ -132,7 +131,7 @@ class CacheView:
         ]
 
         def interleave_list(l1: List[torch.Tensor],
-                    l2: List[torch.Tensor]) -> List[torch.Tensor]:
+                            l2: List[torch.Tensor]) -> List[torch.Tensor]:
             assert len(l1) == len(l2)
             return [v for pair in zip(l1, l2) for v in pair]
 
@@ -267,6 +266,7 @@ class BufferCache:
             seqlens=seqlens,
         )
 
+
 # reference: microsoft/Phi-3.5-MoE-instruct: modeling_phimoe.py
 class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
 
@@ -333,7 +333,13 @@ class Attention(nn.Module):
         x2 = x[..., x.shape[-1] // 2:]
         return torch.cat((-x2, x1), dim=-1)
 
-    def _apply_rotary_pos_emb(self, q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    def _apply_rotary_pos_emb(self,
+                              q,
+                              k,
+                              cos,
+                              sin,
+                              position_ids=None,
+                              unsqueeze_dim=1):
         cos = cos[position_ids].unsqueeze(unsqueeze_dim)
         sin = sin[position_ids].unsqueeze(unsqueeze_dim)
         q_embed = (q * cos) + (self._rotate_half(q) * sin)
@@ -341,7 +347,7 @@ class Attention(nn.Module):
         return q_embed, k_embed
 
     def _apply_rotary_emb(
-        self, 
+        self,
         xq: torch.Tensor,
         xk: torch.Tensor,
         freqs_cis: torch.Tensor,
@@ -368,10 +374,15 @@ class Attention(nn.Module):
         xv = xv.view(seqlen_sum, self.n_kv_heads, self.head_dim)
 
         if self.args.model_type == PHI_MODEL_TYPE:
-            kv_seq_len = xk.shape[0] + (0 if cache is None else cache.key.shape[1])
+            kv_seq_len = xk.shape[0] + (0 if cache is None else
+                                        cache.key.shape[1])
             cos, sin = self.rotary_emb(xv, seq_len=kv_seq_len)
-            xq, xk = self._apply_rotary_pos_emb(xq, xk, cos, sin, position_ids=positions)
-        else: # MixtralForCausalLM
+            xq, xk = self._apply_rotary_pos_emb(xq,
+                                                xk,
+                                                cos,
+                                                sin,
+                                                position_ids=positions)
+        else:  # MixtralForCausalLM
             xq, xk = self._apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
         if cache is None:
@@ -388,10 +399,11 @@ class Attention(nn.Module):
                            self.head_dim)
 
         def repeat_kv(keys: torch.Tensor, values: torch.Tensor, repeats: int,
-              dim: int) -> Tuple[torch.Tensor, torch.Tensor]:
+                      dim: int) -> Tuple[torch.Tensor, torch.Tensor]:
             keys = torch.repeat_interleave(keys, repeats=repeats, dim=dim)
             values = torch.repeat_interleave(values, repeats=repeats, dim=dim)
             return keys, values
+
         # Repeat keys and values to match number of query heads
         key, val = repeat_kv(key, val, self.repeats, dim=1)
 
@@ -517,10 +529,7 @@ class Experts:
                 x_cpu = x.to("cpu")
 
                 # self.check_data_cpy_finished(li, cache_hit[i])
-                order = [0, 1]
-                if cache_hit[1] != -1:
-                    order = [1, 0]
-                for i in order:
+                for i in [0, 1]:
                     # CPU compute first, and move expert to GPU
                     if cache_hit[i] == -1:
                         w = self.ws[f"{li}.{ei_list[i]}"]
@@ -549,8 +558,6 @@ class Experts:
 
                         ret_l.append((nn.functional.silu(x @ w[0].T) *
                                       (x @ w[2].T)) @ w[1])
-                if order[0] == 1:
-                    ret_l = [ret_l[1], ret_l[0]]
             return ret_l, cache_hit
         else:  # cache miss (due to insufficient cache size)
             x_cpu = x.to("cpu")
@@ -700,8 +707,7 @@ class MoeLayer(nn.Module):
             for idx, i in enumerate(selected_experts[0]):
                 batch_idx, nth_expert = torch.where(selected_experts == i)
                 ret_l[idx] = ret_l[idx].to(weights.device)
-                results[0] += (weights[0, nth_expert, None] *
-                                ret_l[idx])[0]
+                results[0] += (weights[0, nth_expert, None] * ret_l[idx])[0]
             ed = time.time()
             if cache_hit[0] == -1 and cache_hit[1] == -1:
                 hit_count = 0
@@ -759,10 +765,12 @@ class TransformerBlock(nn.Module):
             experts=experts,
         )
 
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor, positions: torch.Tensor,
+    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor,
+                positions: torch.Tensor,
                 cache: Optional[CacheView]) -> torch.Tensor:
         st = time.time()
-        r = self.attention.forward(self.attention_norm(x), freqs_cis, positions, cache)
+        r = self.attention.forward(self.attention_norm(x), freqs_cis,
+                                   positions, cache)
         h = x + r
         ed = time.time()
         atten_time = ed - st
@@ -780,12 +788,8 @@ class Transformer(nn.Module):
         self._precomputed_freqs_cis: torch.Tensor = None
         self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim)
         lm_bias = args.lm_head_bias if args.model_type == PHI_MODEL_TYPE else False
-        self.norm = RMSNorm(args.dim,
-                            eps=args.norm_eps,
-                            bias=lm_bias)
-        self.output = nn.Linear(args.dim,
-                                args.vocab_size,
-                                bias=lm_bias)
+        self.norm = RMSNorm(args.dim, eps=args.norm_eps, bias=lm_bias)
+        self.output = nn.Linear(args.dim, args.vocab_size, bias=lm_bias)
         self.layers = nn.ModuleDict({
             str(li):
             TransformerBlock(args=args, li=li, experts=experts)
@@ -810,17 +814,17 @@ class Transformer(nn.Module):
             # default to 10**6
             theta = self.args.rope_theta or 1000000.0
             self._precomputed_freqs_cis = self._precompute_freqs_cis(
-                self.args.head_dim, 128_000, theta
-            )
+                self.args.head_dim, 128_000, theta)
 
         if self._precomputed_freqs_cis.device != self.device:
             self._precomputed_freqs_cis = self._precomputed_freqs_cis.to(
-                device=self.device
-            )
+                device=self.device)
         return self._precomputed_freqs_cis
-    
-    def _precompute_freqs_cis(self, dim: int, end: int, theta: float) -> torch.Tensor:
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+
+    def _precompute_freqs_cis(self, dim: int, end: int,
+                              theta: float) -> torch.Tensor:
+        freqs = 1.0 / (theta
+                       **(torch.arange(0, dim, 2)[:(dim // 2)].float() / dim))
         t = torch.arange(end, device=freqs.device)
         freqs = torch.outer(t, freqs).float()
         return torch.polar(torch.ones_like(freqs), freqs)
@@ -841,8 +845,8 @@ class Transformer(nn.Module):
         h = self.tok_embeddings(input_ids)
         if self.args.model_type == PHI_MODEL_TYPE:
             freqs_cis = torch.tensor(0)
-        else: # MixtralForCausalLM
-           freqs_cis = self.freqs_cis[input_metadata.positions]
+        else:  # MixtralForCausalLM
+            freqs_cis = self.freqs_cis[input_metadata.positions]
 
         atten_time_list = []
         ffn_comm_list = []
@@ -853,7 +857,8 @@ class Transformer(nn.Module):
             cache_view = cache.get_view(li, input_metadata)
             with nvtx.annotate(f"block{li}", color="red"):
                 h, atten_time, ffn_comm, ffn_compute, cache_hit_count = self.layers[
-                    str(li)](h, freqs_cis, input_metadata.positions, cache_view)
+                    str(li)](h, freqs_cis, input_metadata.positions,
+                             cache_view)
             atten_time_list.append(atten_time)
             ffn_comm_list.append(ffn_comm)
             ffn_compute_list.append(ffn_compute)
@@ -897,10 +902,11 @@ class Transformer(nn.Module):
             map_location=gpu,
             mmap=True,
         )
-        experts = torch.load(model_path / "experts.pt",
-                             weights_only=model_args.model_type == PHI_MODEL_TYPE,
-                             map_location=torch.device("cpu"),
-                             mmap=True)
+        experts = torch.load(
+            model_path / "experts.pt",
+            weights_only=model_args.model_type == PHI_MODEL_TYPE,
+            map_location=torch.device("cpu"),
+            mmap=True)
         exp = Experts(model_args, experts)
 
         with torch.device("meta"):
