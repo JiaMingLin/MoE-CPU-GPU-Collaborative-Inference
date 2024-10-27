@@ -429,9 +429,9 @@ class Experts:
             replacement_policy: str,  # FIFO or LRU
             device="cuda") -> None:
         single_expert_shape = list(self.ws[f"{0}.{0}"].shape)
-        # for i in range(self.args.n_layers):
-        #     for j in range(self.args.moe["num_experts"]):
-        #         self.ws[f"{i}.{j}"] = self.ws[f"{i}.{j}"].pin_memory()
+        for i in range(self.args.n_layers):
+            for j in range(self.args.moe["num_experts"]):
+                self.ws[f"{i}.{j}"] = self.ws[f"{i}.{j}"].pin_memory()
         self.quota = quota
         self.max_quota = quota
 
