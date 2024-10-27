@@ -109,7 +109,7 @@ if __name__ == '__main__':
     cache_hit_2_random = [
         cache_hit_rate['random'][setting][1] for setting in cache_settings
     ]
-    plt.figure(figsize=(9, 3.5))
+    plt.figure(figsize=(9, 3))
     plt.plot(cache_settings_str,
              cache_hit_1_random,
              label='expert(s) hit (Random)',
@@ -139,8 +139,8 @@ if __name__ == '__main__':
 
     plt.xlabel('Cache Settings (num_blocks, num_ways)')
     plt.ylabel('Cache Hit Rate (%)')
-    plt.title(
-        'Cache Hit Rate under Different Cache Configurations and Policies')
+    # plt.title(
+    #     'Cache Hit Rate under Different Cache Configurations and Policies')
     plt.legend()
     plt.grid(True)
     # plt.xticks(rotation=45)
