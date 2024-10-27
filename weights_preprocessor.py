@@ -77,6 +77,7 @@ class WeightsPreprocessor:
             }
         conf["max_position_embeddings"] = self.config[
             "max_position_embeddings"]
+        conf["model_type"] = self.config["architectures"][0]
         with open(self.output_path / "params.json", "w") as f:
             json.dump(conf, f)
 

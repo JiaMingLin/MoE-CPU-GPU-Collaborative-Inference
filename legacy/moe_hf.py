@@ -19,14 +19,15 @@ import torch.nn.functional as F
 
 from xformers.ops.fmha import memory_efficient_attention  # type: ignore
 from xformers.ops.fmha.attn_bias import (  # type: ignore
-    AttentionBias,
-    BlockDiagonalCausalMask,
+    AttentionBias, BlockDiagonalCausalMask,
     BlockDiagonalCausalWithOffsetPaddedKeysMask,
 )
 
 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
 from mistral_common.protocol.instruct.messages import UserMessage
 from mistral_common.protocol.instruct.request import ChatCompletionRequest
+
+from transformers import AutoTokenizer
 
 LOGS = {}  # perf_analysis
 EXPERT_CHOICES = {"choice": [], "cnt": []}
@@ -40,9 +41,13 @@ def reset_logs():  # perf_analysis
     LOGS = {"attn": [], "ffn_compute": [], "ffn_comm": []}
     EXPERT_CHOICES = {"choice": [], "cnt": []}
     CUR_TOKEN_CHOICES = []
+
+
 reset_logs()
 
+
 class CPUMonitor:
+
     def __init__(self):
         self.running = False
         self.data = []
@@ -65,22 +70,21 @@ class CPUMonitor:
         self.cnt = 0
 
     def get_cpu_temperature(self):
-        result = subprocess.run(
-            "sensors",
-            shell=True,
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run("sensors",
+                                shell=True,
+                                capture_output=True,
+                                text=True)
         output = result.stdout.strip().split('\n')
-        
+
         temperatures = {}
         for line in output:
             if 'Tctl' in line or 'Tccd' in line:
                 parts = line.split(':')
                 label = parts[0].strip()
-                temp = parts[1].strip().split(' ')[0].replace('+', '').replace('°C', '')
+                temp = parts[1].strip().split(' ')[0].replace('+', '').replace(
+                    '°C', '')
                 temperatures[label] = float(temp)
-        
+
         return temperatures
 
     def _capture_mhz(self):
@@ -89,8 +93,7 @@ class CPUMonitor:
                 f"cat /proc/cpuinfo | grep 'MHz' | sed 's/cpu MHz[[:space:]]*:[[:space:]]*//' | sort -n | tail -n {self.OMP_NUM_THREADS}",
                 shell=True,
                 capture_output=True,
-                text=True
-            )
+                text=True)
             # convert to int
             arr = [int(float(x)) for x in result.stdout.strip().split('\n')]
             temp = self.get_cpu_temperature()['Tctl']
@@ -104,14 +107,16 @@ class CPUMonitor:
     def save_data(self, path, type="avg"):
         # save data as csv
         data = self.data_avg if type == "avg" else self.data
-        title = ["Seconds", "Temperature"] + [f"cpu{i}" for i in range(len(data[0]))]
+        title = ["Seconds", "Temperature"
+                 ] + [f"cpu{i}" for i in range(len(data[0]))]
         with open(path, 'w') as f:
             writer = csv.writer(f)
             writer.writerow(title)
             writer.writerows(data)
-    
+
     def get_data_avg(self, type="avg"):
         return self.data_avg
+
 
 def dump_expert_choices_to_csv(expert_choices: list, file_path: str):
     """
@@ -134,7 +139,9 @@ def dump_expert_choices_to_csv(expert_choices: list, file_path: str):
             row = [i] + choice
             writer.writerow(row)
 
-def dump_expert_cache_to_csv(expert_choices: list, file_path: str, cache_size: int):
+
+def dump_expert_cache_to_csv(expert_choices: list, file_path: str,
+                             cache_size: int):
     # Open the file and write the expert choices
     expert_choices = expert_choices["cnt"]
     cache_hit_1 = 0
@@ -148,7 +155,7 @@ def dump_expert_cache_to_csv(expert_choices: list, file_path: str, cache_size: i
 
         # Write the expert choices
         for i, choice in enumerate(expert_choices):
-            
+
             for idx, j in enumerate(choice):
                 if idx >= cache_size:
                     break
@@ -166,9 +173,12 @@ def dump_expert_cache_to_csv(expert_choices: list, file_path: str, cache_size: i
     else:
         cache_hit_1 = cache_hit_1 / total_test * 100
         cache_hit_2 = cache_hit_2 / total_test * 100
-        print(f"Cache hit 1: {cache_hit_1:.1f}\n Cache hit 2: {cache_hit_2:.1f}")
+        print(
+            f"Cache hit 1: {cache_hit_1:.1f}\n Cache hit 2: {cache_hit_2:.1f}")
 
-def dump_token_generation_time_to_csv(logs: list, cpu_freq_avg: list, file_path: str):
+
+def dump_token_generation_time_to_csv(logs: list, cpu_freq_avg: list,
+                                      file_path: str):
     """
     Dumps the LOGS dictionary to a CSV file.
 
@@ -180,7 +190,11 @@ def dump_token_generation_time_to_csv(logs: list, cpu_freq_avg: list, file_path:
     with open(file_path, mode='w') as file:
         writer = csv.writer(file)
         # Write the header
-        writer.writerow(["Index", "Time", "Timestamp", "Accumulated Generation Throughput (tokens/s)", "CPU Frequency", "CPU Temperature"])
+        writer.writerow([
+            "Index", "Time", "Timestamp",
+            "Accumulated Generation Throughput (tokens/s)", "CPU Frequency",
+            "CPU Temperature"
+        ])
 
         # Write the log values
         time_sum = 0
@@ -191,7 +205,11 @@ def dump_token_generation_time_to_csv(logs: list, cpu_freq_avg: list, file_path:
                 cpu_freq = cpu_freq_avg[-1]
             else:
                 cpu_freq = cpu_freq_avg[timestamp]
-            writer.writerow([i+1, log, timestamp, f"{(i+1) / time_sum:.3f}", cpu_freq[-1], cpu_freq[-2]])
+            writer.writerow([
+                i + 1, log, timestamp, f"{(i+1) / time_sum:.3f}", cpu_freq[-1],
+                cpu_freq[-2]
+            ])
+
 
 def dump_logs_to_csv(logs: dict, file_path: str):
     """
@@ -217,12 +235,28 @@ def dump_logs_to_csv(logs: dict, file_path: str):
                 # Append the value if it exists, otherwise append an empty string
                 row.append(logs[key][i] if i < len(logs[key]) else "")
             writer.writerow(row)
-            
-def precompute_freqs_cis(dim: int, end: int, theta: float) -> torch.Tensor:
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+
+
+def precompute_freqs_cis(dim: int,
+                         end: int,
+                         theta: float,
+                         rope_scaling: dict = None) -> torch.Tensor:
+    if rope_scaling is not None:
+        ext_factors = torch.tensor(rope_scaling["short_factor"],
+                                   dtype=torch.float32)
+        freqs = 1.0 / (ext_factors * theta**
+                       (torch.arange(0, dim, 2)[:(dim // 2)].float() / dim))
+    else:
+        freqs = 1.0 / (theta
+                       **(torch.arange(0, dim, 2)[:(dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device)
+    # For Phi 3.5-MoE
+    # We expect that the sequence length does not exceed Phi-3.5's maximum sequence length
+    # which is 131072. Therefore, we only use `short_mscale`.
+    # Please note that the maximum sequence length of MoE is 32768.
+    mscale = rope_scaling["mscale"] if rope_scaling is not None else 1.0
     freqs = torch.outer(t, freqs).float()
-    return torch.polar(torch.ones_like(freqs), freqs)  # complex64
+    return torch.polar(torch.ones_like(freqs), freqs) * mscale  # complex64
 
 
 def apply_rotary_emb(
@@ -238,9 +272,8 @@ def apply_rotary_emb(
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
-def repeat_kv(
-    keys: torch.Tensor, values: torch.Tensor, repeats: int, dim: int
-) -> Tuple[torch.Tensor, torch.Tensor]:
+def repeat_kv(keys: torch.Tensor, values: torch.Tensor, repeats: int,
+              dim: int) -> Tuple[torch.Tensor, torch.Tensor]:
     keys = torch.repeat_interleave(keys, repeats=repeats, dim=dim)
     values = torch.repeat_interleave(values, repeats=repeats, dim=dim)
     return keys, values
@@ -263,6 +296,10 @@ class ModelArgs:
     vocab_size: int
     rope_theta: float
     moe: dict
+    max_position_embeddings: int = 128_000
+    lm_head_bias: bool = False
+    attention_bias: bool = False
+    rope_scaling: dict = None
 
     @classmethod
     def from_dict(cls, params: dict):
@@ -276,12 +313,11 @@ class SimpleInputMetadata:
     positions: torch.Tensor
 
     @staticmethod
-    def from_seqlens(seqlens: List[int], device: torch.device) -> "SimpleInputMetadata":
-        return SimpleInputMetadata(
-            positions=torch.cat([torch.arange(0, seqlen) for seqlen in seqlens]).to(
-                device=device, dtype=torch.long
-            )
-        )
+    def from_seqlens(seqlens: List[int],
+                     device: torch.device) -> "SimpleInputMetadata":
+        return SimpleInputMetadata(positions=torch.cat(
+            [torch.arange(0, seqlen)
+             for seqlen in seqlens]).to(device=device, dtype=torch.long))
 
 
 @dataclass
@@ -298,14 +334,14 @@ class CacheInputMetadata:
     seqlens: List[int]
 
 
-def interleave_list(
-    l1: List[torch.Tensor], l2: List[torch.Tensor]
-) -> List[torch.Tensor]:
+def interleave_list(l1: List[torch.Tensor],
+                    l2: List[torch.Tensor]) -> List[torch.Tensor]:
     assert len(l1) == len(l2)
     return [v for pair in zip(l1, l2) for v in pair]
 
 
 class CacheView:
+
     def __init__(
         self,
         cache_k: torch.Tensor,
@@ -329,9 +365,8 @@ class CacheView:
         flat_cache_k.index_copy_(0, self.metadata.cache_positions, xk)
         flat_cache_v.index_copy_(0, self.metadata.cache_positions, xv)
 
-    def interleave_kv(
-        self, xk: torch.Tensor, xv: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def interleave_kv(self, xk: torch.Tensor,
+                      xv: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         This is a naive implementation and not optimized for speed.
         """
@@ -343,18 +378,22 @@ class CacheView:
             return xk, xv
 
         # Make it a list of [(T, H, D)]
-        xk: Tuple[torch.Tensor] = torch.split(xk, self.metadata.seqlens)  # type: ignore
-        xv: Tuple[torch.Tensor] = torch.split(xv, self.metadata.seqlens)  # type: ignore
+        xk: Tuple[torch.Tensor] = torch.split(
+            xk, self.metadata.seqlens)  # type: ignore
+        xv: Tuple[torch.Tensor] = torch.split(
+            xv, self.metadata.seqlens)  # type: ignore
         assert len(xk) == len(
             self.kv_seqlens
         ), f"Batch size is {len(self.kv_seqlens)}, got {len(xk)}"
 
         # Retrieve cache
         cache_k = [
-            cache_k[:seq_len] for cache_k, seq_len in zip(self.cache_k, self.kv_seqlens)
+            cache_k[:seq_len]
+            for cache_k, seq_len in zip(self.cache_k, self.kv_seqlens)
         ]
         cache_v = [
-            cache_v[:seq_len] for cache_v, seq_len in zip(self.cache_v, self.kv_seqlens)
+            cache_v[:seq_len]
+            for cache_v, seq_len in zip(self.cache_v, self.kv_seqlens)
         ]
 
         interleaved_k = interleave_list(cache_k, list(xk))
@@ -368,11 +407,11 @@ class CacheView:
 
     @property
     def key(self) -> torch.Tensor:
-        return self.cache_k[: len(self.kv_seqlens)]
+        return self.cache_k[:len(self.kv_seqlens)]
 
     @property
     def value(self) -> torch.Tensor:
-        return self.cache_v[: len(self.kv_seqlens)]
+        return self.cache_v[:len(self.kv_seqlens)]
 
     @property
     def prefill(self) -> bool:
@@ -402,27 +441,25 @@ class BufferCache:
         self.head_dim = head_dim
 
         self.cache_k = torch.empty(
-            (n_layers, max_batch_size, max_seq_len, n_kv_heads, head_dim)
-        )
+            (n_layers, max_batch_size, max_seq_len, n_kv_heads, head_dim))
         self.cache_v = torch.empty(
-            (n_layers, max_batch_size, max_seq_len, n_kv_heads, head_dim)
-        )
+            (n_layers, max_batch_size, max_seq_len, n_kv_heads, head_dim))
         # holds the valid length for each batch element in the cache
         self.kv_seqlens: Optional[torch.Tensor] = None
 
-    def get_view(self, layer_id: int, metadata: CacheInputMetadata) -> CacheView:
+    def get_view(self, layer_id: int,
+                 metadata: CacheInputMetadata) -> CacheView:
         assert self.kv_seqlens is not None
-        return CacheView(
-            self.cache_k[layer_id], self.cache_v[layer_id], metadata, self.kv_seqlens
-        )
+        return CacheView(self.cache_k[layer_id], self.cache_v[layer_id],
+                         metadata, self.kv_seqlens)
 
     def reset(self) -> None:
         self.kv_seqlens = None
 
     def init_kvseqlens(self, batch_size: int) -> None:
-        self.kv_seqlens = torch.zeros(
-            (batch_size,), device=self.device, dtype=torch.long
-        )
+        self.kv_seqlens = torch.zeros((batch_size, ),
+                                      device=self.device,
+                                      dtype=torch.long)
 
     @property
     def device(self) -> torch.device:
@@ -436,7 +473,9 @@ class BufferCache:
 
     def update_seqlens(self, seqlens: List[int]) -> None:
         assert self.kv_seqlens is not None
-        self.kv_seqlens += torch.tensor(seqlens, device=self.device, dtype=torch.long)
+        self.kv_seqlens += torch.tensor(seqlens,
+                                        device=self.device,
+                                        dtype=torch.long)
 
     def get_input_metadata(self, seqlens: List[int]) -> CacheInputMetadata:
         """
@@ -452,11 +491,14 @@ class BufferCache:
         seqpos = self.kv_seqlens.tolist()
 
         assert len(seqlens) > 0, seqlens
-        cached_elements = torch.tensor(seqlens, device=self.device, dtype=torch.long)
+        cached_elements = torch.tensor(seqlens,
+                                       device=self.device,
+                                       dtype=torch.long)
 
-        positions = torch.cat(
-            [torch.arange(pos, pos + seqlen) for pos, seqlen in zip(seqpos, seqlens)]
-        ).to(device=self.device, dtype=torch.long)
+        positions = torch.cat([
+            torch.arange(pos, pos + seqlen)
+            for pos, seqlen in zip(seqpos, seqlens)
+        ]).to(device=self.device, dtype=torch.long)
         batch_idx = torch.tensor(
             sum([[i] * seqlen for i, seqlen in enumerate(seqlens)], []),
             device=self.device,
@@ -467,16 +509,14 @@ class BufferCache:
         during_prefill = seqpos[0] == 0
         if during_prefill:
             assert all([pos == 0 for pos in seqpos]), seqpos
-            mask = BlockDiagonalCausalMask.from_seqlens(seqlens).make_local_attention(
-                self.max_seq_len
-            )
+            mask = BlockDiagonalCausalMask.from_seqlens(
+                seqlens).make_local_attention(self.max_seq_len)
         else:
             mask = BlockDiagonalCausalWithOffsetPaddedKeysMask.from_seqlens(
                 q_seqlen=seqlens,
                 kv_padding=self.max_seq_len,
-                kv_seqlen=(self.kv_seqlens + cached_elements)
-                .clamp(max=self.max_seq_len)
-                .tolist(),
+                kv_seqlen=(self.kv_seqlens + cached_elements).clamp(
+                    max=self.max_seq_len).tolist(),
             )
 
         return CacheInputMetadata(
@@ -488,7 +528,61 @@ class BufferCache:
         )
 
 
+class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
+
+    def __init__(self, dim, config):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = config.max_position_embeddings
+        self.base = config.rope_theta
+        self.short_factor = config.rope_scaling["short_factor"]
+        # self.long_factor = config.rope_scaling["long_factor"]
+        self.short_mscale = config.rope_scaling["mscale"]
+        # self.long_mscale = config.rope_scaling["long_mscale"]
+        # self.original_max_position_embeddings = config.rope_scaling["original_max_position_embeddings"]
+
+    def forward(self, x, seq_len=None):
+        if seq_len is None:
+            seq_len = x.shape[-2]
+
+        # if seq_len > self.original_max_position_embeddings:
+        #     rescale_factors = torch.tensor(self.long_factor, dtype=torch.float32, device=x.device)
+        #     mscale = self.long_mscale
+        # else:
+        rescale_factors = torch.tensor(self.short_factor,
+                                       dtype=torch.float32,
+                                       device=x.device)
+        mscale = self.short_mscale
+        assert rescale_factors.shape == (self.dim // 2, ), \
+            f"misaligned shape for LongRoPE rescale factors: {rescale_factors.shape}"
+
+        inv_freq = 1.0 / (rescale_factors * (self.base**(
+            torch.arange(0, self.dim, 2).float().to(x.device) / self.dim)))
+
+        t = torch.arange(seq_len, device=x.device, dtype=torch.float32)
+        freqs = torch.outer(t, inv_freq)
+
+        emb = torch.cat((freqs, freqs), dim=-1)
+        return (emb.cos() * mscale).to(x.dtype), (emb.sin() * mscale).to(
+            x.dtype)
+
+
+def rotate_half(x):
+    x1 = x[..., :x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2:]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    cos = cos[position_ids].unsqueeze(unsqueeze_dim)
+    sin = sin[position_ids].unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+
+
 class Attention(nn.Module):
+
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args
@@ -501,15 +595,23 @@ class Attention(nn.Module):
 
         self.scale = self.args.head_dim**-0.5
 
-        self.wq = nn.Linear(args.dim, args.n_heads * args.head_dim, bias=False)
-        self.wk = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
-        self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=False)
+        bias = args.attention_bias
+        self.wq = nn.Linear(args.dim, args.n_heads * args.head_dim, bias=bias)
+        self.wk = nn.Linear(args.dim,
+                            args.n_kv_heads * args.head_dim,
+                            bias=bias)
+        self.wv = nn.Linear(args.dim,
+                            args.n_kv_heads * args.head_dim,
+                            bias=bias)
+        self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=bias)
+
+        self.rotary_emb = Phi3LongRoPEScaledRotaryEmbedding(
+            self.head_dim, self.args)
 
     def forward(
         self,
         x: torch.Tensor,
-        freqs_cis: torch.Tensor,
+        positions: torch.Tensor,
         cache: Optional[CacheView],
     ) -> torch.Tensor:
         seqlen_sum, _ = x.shape
@@ -518,7 +620,10 @@ class Attention(nn.Module):
         xq = xq.view(seqlen_sum, self.n_heads, self.head_dim)
         xk = xk.view(seqlen_sum, self.n_kv_heads, self.head_dim)
         xv = xv.view(seqlen_sum, self.n_kv_heads, self.head_dim)
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+
+        kv_seq_len = xk.shape[0] + (0 if cache is None else cache.key.shape[1])
+        cos, sin = self.rotary_emb(xv, seq_len=kv_seq_len)
+        xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin, position_ids=positions)
 
         if cache is None:
             key, val = xk, xv
@@ -528,75 +633,88 @@ class Attention(nn.Module):
         else:
             cache.update(xk, xv)
             key, val = cache.key, cache.value
-            key = key.view(
-                seqlen_sum * cache.max_seq_len, self.n_kv_heads, self.head_dim
-            )
-            val = val.view(
-                seqlen_sum * cache.max_seq_len, self.n_kv_heads, self.head_dim
-            )
+            key = key.view(seqlen_sum * cache.max_seq_len, self.n_kv_heads,
+                           self.head_dim)
+            val = val.view(seqlen_sum * cache.max_seq_len, self.n_kv_heads,
+                           self.head_dim)
 
         # Repeat keys and values to match number of query heads
         key, val = repeat_kv(key, val, self.repeats, dim=1)
 
         # xformers requires (B=1, S, H, D)
         xq, key, val = xq[None, ...], key[None, ...], val[None, ...]
+
+        # xq = xq.to(dtype=torch.float16)
+        # key = key.to(dtype=torch.float16)
+        # val = val.to(dtype=torch.float16)
         output = memory_efficient_attention(
-            xq, key, val, None if cache is None else cache.mask
-        )
+            xq, key, val, None if cache is None else cache.mask)
+        # output = output.to(dtype=torch.bfloat16)
+
         output = output.view(seqlen_sum, self.n_heads * self.head_dim)
 
         assert isinstance(output, torch.Tensor)
 
         return self.wo(output)  # type: ignore
 
+
 class Experts:
     # tmp design:
     # 1. shared across layers
     # 2. weights and computation on CPU
 
-    def __init__(self, ws: dict):
+    def __init__(self, model_args: ModelArgs, ws: dict):
         self.ws = ws
+        self.args = model_args
 
-    def init_cache(self, 
-                   cache_nblock: int,
-                   cache_nway: int,
-                   quota: int,
-                   replacement_policy: str, # FIFO or LRU
-                   device="cuda") -> None:
+    def init_cache(
+            self,
+            cache_nblock: int,
+            cache_nway: int,
+            quota: int,
+            replacement_policy: str,  # FIFO or LRU
+            device="cuda") -> None:
+        single_expert_shape = list(self.ws[f"{0}.{0}"].shape)
+        for i in range(self.args.n_layers):
+            for j in range(self.args.moe["num_experts"]):
+                self.ws[f"{i}.{j}"] = self.ws[f"{i}.{j}"].pin_memory()
         self.quota = quota
         self.max_quota = quota
-        if cache_nblock != 0:
-            single_expert_shape = list(self.ws[f"{0}.{0}"].shape)
-            for i in range(32):
-                for j in range(8):
-                    self.ws[f"{i}.{j}"] = self.ws[f"{i}.{j}"].pin_memory()
-            
-            self.nblocks = cache_nblock
-            self.nways = cache_nway
-            self.cache_shape = tuple([cache_nblock, cache_nway] + single_expert_shape)
 
-            self.cache_tag = torch.zeros((cache_nblock, cache_nway), dtype=torch.int8, device="cpu")
-            self.cache_valid = torch.zeros((cache_nblock, cache_nway), dtype=torch.int8, device="cpu")
-            print(f"Cache shape: {self.cache_shape}")
+        self.nblocks = cache_nblock
+        self.nways = cache_nway
+        self.cache_shape = tuple([cache_nblock, cache_nway] +
+                                 single_expert_shape)
 
-            self.replacement_policy = replacement_policy
+        self.cache_tag = torch.zeros((cache_nblock, cache_nway),
+                                     dtype=torch.int8,
+                                     device="cpu")
+        self.cache_valid = torch.zeros((cache_nblock, cache_nway),
+                                       dtype=torch.int8,
+                                       device="cpu")
+        self.cache_valid_cuda_event = []
+        print(f"Cache shape: {self.cache_shape}")
 
-            self.cache_FIFO = []
-            self.cache_LRU = []
-            self.cuda_stream = torch.cuda.Stream(device="cuda")
-            self.cache_device = device
-            with torch.cuda.stream(self.cuda_stream):
-                self.cache = torch.empty(self.cache_shape, dtype=torch.bfloat16, device=self.cache_device)
-            for i in range(self.nblocks):
-                push_list_FIFO = []
-                push_list_LRU = []
-                for j in range(self.nways):
-                    push_list_FIFO.append(j)
-                    push_list_LRU.append(0)
-                self.cache_FIFO.append(push_list_FIFO)
-                self.cache_LRU.append(push_list_LRU)
+        self.replacement_policy = replacement_policy
 
-    
+        self.cache_FIFO = []
+        self.cache_LRU = []
+        self.cuda_stream = torch.cuda.Stream(device="cuda")
+        self.cache_device = device
+        with torch.cuda.stream(self.cuda_stream):
+            self.cache = torch.empty(self.cache_shape,
+                                     dtype=torch.bfloat16,
+                                     device=self.cache_device)
+        for i in range(self.nblocks):
+            push_list_FIFO = []
+            push_list_LRU = []
+            self.cache_valid_cuda_event.append([None] * self.nways)
+            for j in range(self.nways):
+                push_list_FIFO.append(j)
+                push_list_LRU.append(0)
+            self.cache_FIFO.append(push_list_FIFO)
+            self.cache_LRU.append(push_list_LRU)
+
     def pop_cache(self, li: int) -> None:
         if self.replacement_policy == "FIFO":
             x = self.cache_FIFO[li].pop(0)
@@ -608,74 +726,103 @@ class Experts:
             mx = max(self.cache_LRU[li])
             self.cache_LRU[li][argmin_index] = mx + 1
         return x
-    
+
     def check_cache_hit(self, li: int, ei: int) -> bool:
         for i in range(self.nways):
             if self.cache_tag[li, i] == ei and self.cache_valid[li, i] > 0:
                 self.cache_LRU[li][i] += 1
                 return i
         return -1
-    
+
     def check_data_cpy_finished(self, li: int, i: int) -> bool:
         if self.cache_valid[li][i] == 2:
             # self.cuda_stream[li].synchronize()
+            self.cache_valid_cuda_event[li][i].synchronize()
             self.cache_valid[li][i] = 1
 
     def reset_quota(self) -> None:
         self.quota = self.max_quota
 
-    def cache_aware_forward(self, li: int, ei_list: list, x: torch.Tensor) -> torch.Tensor:
+    def cache_aware_forward(self, li: int, ei_list: list,
+                            x: torch.Tensor) -> torch.Tensor:
         exp1 = ei_list[0]
         exp2 = ei_list[1]
         ret_l = []
         if li < self.nblocks:
-            cache_hit = [self.check_cache_hit(li, exp1), self.check_cache_hit(li, exp2)]
+            cache_hit = [
+                self.check_cache_hit(li, exp1),
+                self.check_cache_hit(li, exp2)
+            ]
             if cache_hit[0] != -1 and cache_hit[1] != -1:
                 for i in range(2):
-                    # self.check_data_cpy_finished(li, cache_hit[i])
+                    self.check_data_cpy_finished(li, cache_hit[i])
                     w = self.cache[li, cache_hit[i]]
-                    ret_l.append((nn.functional.silu(x @ w[0].T) * (x @ w[2].T)) @ w[1])
+                    ret_l.append(
+                        (nn.functional.silu(x @ w[0].T) * (x @ w[2].T)) @ w[1])
             else:
                 x_cpu = x.to("cpu")
 
                 # self.check_data_cpy_finished(li, cache_hit[i])
-                for i in range(2):
+                order = [0, 1]
+                if cache_hit[1] != -1:
+                    order = [1, 0]
+                for i in order:
                     # CPU compute first, and move expert to GPU
                     if cache_hit[i] == -1:
                         w = self.ws[f"{li}.{ei_list[i]}"]
-                        with nvtx.annotate(f"block{li} CPU compute expert", color="orange"):
-                            ret_l.append((nn.functional.silu(x_cpu @ w[0].T) * (x_cpu @ w[2].T)) @ w[1].to())
+                        with nvtx.annotate(f"block{li} CPU compute expert",
+                                           color="orange"):
+                            ret_l.append((nn.functional.silu(x_cpu @ w[0].T) *
+                                          (x_cpu @ w[2].T)) @ w[1].to())
                         self.quota -= 1
                         if self.quota > 0:
                             with torch.cuda.stream(self.cuda_stream):
                                 dst_way = self.pop_cache(li)
                                 self.cache_tag[li, dst_way] = ei_list[i]
                                 self.cache_valid[li, dst_way] = 2
-                                self.cache[li, dst_way].copy_(self.ws[f"{li}.{ei_list[i]}"], non_blocking=True)
-                                    # self.cache[li, dst_way] = self.ws[f"{li}.{ei_list[i]}"].to(self.cache[li, dst_way].device, non_blocking=True)
-                                    # w.to(self.cache[li, dst_way], non_blocking=True)
+                                self.cache[li, dst_way].copy_(
+                                    self.ws[f"{li}.{ei_list[i]}"],
+                                    non_blocking=True)
+                                self.cache_valid_cuda_event[li][
+                                    dst_way] = torch.cuda.Event()
+                                self.cache_valid_cuda_event[li][
+                                    dst_way].record(self.cuda_stream)
+                                # self.cache[li, dst_way] = self.ws[f"{li}.{ei_list[i]}"].to(self.cache[li, dst_way].device, non_blocking=True)
+                                # w.to(self.cache[li, dst_way], non_blocking=True)
                     else:
+                        self.check_data_cpy_finished(li, cache_hit[i])
                         w = self.cache[li, cache_hit[i]]
-                        ret_l.append((nn.functional.silu(x @ w[0].T) * (x @ w[2].T)) @ w[1])
+
+                        ret_l.append((nn.functional.silu(x @ w[0].T) *
+                                      (x @ w[2].T)) @ w[1])
+                if order[0] == 1:
+                    ret_l = [ret_l[1], ret_l[0]]
             return ret_l, cache_hit
-        else:                                                           # cache miss (due to insufficient cache size)
+        else:  # cache miss (due to insufficient cache size)
             x_cpu = x.to("cpu")
             w1 = self.ws[f"{li}.{ei_list[0]}"]
             w2 = self.ws[f"{li}.{ei_list[1]}"]
-            ret_l.append((nn.functional.silu(x_cpu @ w1[0].T) * (x_cpu @ w1[2].T)) @ w1[1])
-            ret_l.append((nn.functional.silu(x_cpu @ w2[0].T) * (x_cpu @ w2[2].T)) @ w2[1])
+            ret_l.append((nn.functional.silu(x_cpu @ w1[0].T) *
+                          (x_cpu @ w1[2].T)) @ w1[1])
+            ret_l.append((nn.functional.silu(x_cpu @ w2[0].T) *
+                          (x_cpu @ w2[2].T)) @ w2[1])
             return ret_l, [-1, -1]
 
-    def forward(self, li: int, ei: int, x: torch.Tensor, device: str = "cpu") -> torch.Tensor:
+    def forward(self,
+                li: int,
+                ei: int,
+                x: torch.Tensor,
+                device: str = "cpu") -> torch.Tensor:
         w = self.ws[f"{li}.{ei}"]
-        
+
         st = time.time()
         # force GPU, used for motivational purposes
-        if (device == "gpu"):       
+        if (device == "gpu"):
             w = w.cuda()
 
         ed = time.time()
-        ret = (nn.functional.silu(x @ w[0].T) * (x @ w[2].T)) @ w[1]  # type: ignore
+        ret = (nn.functional.silu(x @ w[0].T) *
+               (x @ w[2].T)) @ w[1]  # type: ignore
         ed2 = time.time()
 
         weight_2_gpu = ed - st
@@ -684,20 +831,110 @@ class Experts:
 
 
 class MoeLayer(nn.Module):
-    def __init__(self, args: ModelArgs, li: int, gate: nn.Module, experts: Experts):
+
+    def __init__(self, args: ModelArgs, li: int, gate: nn.Module,
+                 experts: Experts):
         super().__init__()
         self.num_experts: int = args.moe["num_experts"]
         self.num_experts_per_tok: int = args.moe["num_experts_per_tok"]
+        if "sparsemixer" in args.moe:
+            self.use_sparsemixer = True
+            self.router_jitter_noise = args.moe['sparsemixer'][
+                'router_jitter_noise']
+        else:
+            self.use_sparsemixer = False
         self.li = li
         self.gate = gate
         self.experts = experts
+
+    def sparsemixer(self, scores, jitter_eps, top_k=2):
+        """
+        Sparse mixer function to select top-k experts and compute multipliers.
+        Based on the paper: https://arxiv.org/pdf/2409.12136
+        We first replace the TopK(·) function as random sampling of discrete variables
+        in model training. Then, following Liu et al. (2023a) and Liu et al. (2023b), we apply Heun's
+        third order method to approximate the expert routing gradient and construct a modified
+        back-propagation to give a mathematically sound gradient estimation for expert routing.
+
+        Args:
+            scores (torch.Tensor): Input scores tensor.
+            jitter_eps (float): Jitter epsilon for numerical stability.
+            top_k (int): Number of top experts to select.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Multiplier and selected experts tensors.
+        """
+        if top_k != 2:
+            raise ValueError("top_k must be equal to 2")
+
+        # first expert
+
+        with torch.no_grad():
+            # Compute mask for sparsity
+            mask_logits_threshold, max_ind = scores.max(dim=-1, keepdim=True)
+            factor = scores.abs().clamp(min=mask_logits_threshold)
+            mask_logits_threshold = ((mask_logits_threshold - scores) /
+                                     factor) > (2 * jitter_eps)
+
+        # Apply mask
+        masked_gates = scores.masked_fill(mask_logits_threshold, float("-inf"))
+        selected_experts = max_ind
+
+        # Compute scores for gradients
+        masked_gates = torch.softmax(masked_gates, dim=-1)
+        multiplier_o = masked_gates.gather(dim=-1, index=selected_experts)
+
+        multiplier = multiplier_o
+
+        # Masked out first expert
+        masked_scores = torch.scatter(
+            scores,
+            -1,
+            selected_experts,
+            float("-inf"),
+        )
+        with torch.no_grad():
+            # Compute mask for sparsity
+            mask_logits_threshold, max_ind = masked_scores.max(dim=-1,
+                                                               keepdim=True)
+            factor = scores.abs().clamp(min=mask_logits_threshold)
+            mask_logits_threshold = ((mask_logits_threshold - scores) /
+                                     factor) > (2 * jitter_eps)
+
+        # Apply mask
+        masked_gates_top2 = masked_scores.masked_fill(mask_logits_threshold,
+                                                      float("-inf"))
+        selected_experts_top2 = max_ind
+        # Compute scores for gradients
+        masked_gates_top2 = torch.softmax(masked_gates_top2, dim=-1)
+        multiplier_top2_o = masked_gates_top2.gather(
+            dim=-1, index=selected_experts_top2)
+
+        multiplier_top2 = multiplier_top2_o
+
+        multiplier = torch.concat((multiplier, multiplier_top2), dim=-1)
+        selected_experts = torch.concat(
+            (selected_experts, selected_experts_top2), dim=-1)
+
+        return (
+            multiplier,
+            selected_experts,
+        )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         global EXPERT_CHOICES
         global CUR_TOKEN_CHOICES
         gate_logits = self.gate(inputs)
-        weights, selected_experts = torch.topk(gate_logits, self.num_experts_per_tok)
-        weights = F.softmax(weights, dim=1, dtype=torch.float).to(inputs.dtype)
+        if self.use_sparsemixer:
+            weights, selected_experts = self.sparsemixer(
+                gate_logits,
+                jitter_eps=self.router_jitter_noise,
+            )
+        else:
+            weights, selected_experts = torch.topk(gate_logits,
+                                                   self.num_experts_per_tok)
+            weights = F.softmax(weights, dim=1,
+                                dtype=torch.float).to(inputs.dtype)
         results = torch.zeros_like(inputs)
 
         mode = 3
@@ -724,9 +961,11 @@ class MoeLayer(nn.Module):
                 token_2_gpu = ed - st
 
                 for i in range(2):
-                    batch_idx, nth_expert = torch.where(selected_experts == selected_experts[0][i])
-                    results[0] += (weights[0, nth_expert, None] * ey_device[i])[0]
-                
+                    batch_idx, nth_expert = torch.where(
+                        selected_experts == selected_experts[0][i])
+                    results[0] += (weights[0, nth_expert, None] *
+                                   ey_device[i])[0]
+
                 if selected_experts[0][0] > selected_experts[0][1]:
                     CUR_TOKEN_CHOICES.append(selected_experts[0][1].item())
                     CUR_TOKEN_CHOICES.append(selected_experts[0][0].item())
@@ -736,13 +975,14 @@ class MoeLayer(nn.Module):
                 # print(CUR_TOKEN_CHOICES)
 
                 # print(token_2_cpu*1000, ffn_compute*1000, token_2_gpu*1000)
-                return results, token_2_cpu+token_2_gpu, ffn_compute, 0
+                return results, token_2_cpu + token_2_gpu, ffn_compute, 0
             elif mode == 2:
                 ex = inputs[0]
                 expert_list = []
-                
+
                 for i in selected_experts[0]:
-                    ey, weight_2_gpu, ffn_compute = self.experts.forward(self.li, i, ex, device='gpu')
+                    ey, weight_2_gpu, ffn_compute = self.experts.forward(
+                        self.li, i, ex, device='gpu')
                     batch_idx, nth_expert = torch.where(selected_experts == i)
                     results[0] += (weights[0, nth_expert, None] * ey)[0]
                 weight_2_gpu = weight_2_gpu * 2
@@ -750,10 +990,11 @@ class MoeLayer(nn.Module):
 
                 # print(weight_2_gpu*1000, ffn_compute*1000)
                 return results, weight_2_gpu, ffn_compute, 0
-            elif mode == 3:     # cache-aware
+            elif mode == 3:  # cache-aware
                 ex = inputs[0]
                 st = time.time()
-                ret_l, cache_hit = self.experts.cache_aware_forward(self.li, selected_experts[0].tolist(), ex)
+                ret_l, cache_hit = self.experts.cache_aware_forward(
+                    self.li, selected_experts[0].tolist(), ex)
 
                 # if selected_experts[0][0] > selected_experts[0][1]:
                 #     CUR_TOKEN_CHOICES.append(selected_experts[0][1].item())
@@ -765,7 +1006,8 @@ class MoeLayer(nn.Module):
                 for idx, i in enumerate(selected_experts[0]):
                     batch_idx, nth_expert = torch.where(selected_experts == i)
                     ret_l[idx] = ret_l[idx].to(weights.device)
-                    results[0] += (weights[0, nth_expert, None] * ret_l[idx])[0]
+                    results[0] += (weights[0, nth_expert, None] *
+                                   ret_l[idx])[0]
                 ed = time.time()
                 if cache_hit[0] == -1 and cache_hit[1] == -1:
                     hit_count = 0
@@ -786,25 +1028,36 @@ class MoeLayer(nn.Module):
 
 
 class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
+
+    def __init__(self, dim: int, eps: float = 1e-6, bias: bool = False):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim)) if bias else None
 
     def _norm(self, x: torch.Tensor) -> torch.Tensor:
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         output = self._norm(x.float()).type_as(x)
-        return output * self.weight
+        output = output * self.weight
+        if self.bias is not None:
+            output += self.bias
+        return output
 
 
 class TransformerBlock(nn.Module):
+
     def __init__(self, args: ModelArgs, li: int, experts: Experts):
         super().__init__()
         self.attention = Attention(args)
-        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        bias = args.attention_bias
+        # Mistral 8x7b
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps, bias=bias)
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps, bias=bias)
+        # Phi-3.5-MoE
+        # self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps, bias=bias, elementwise_affine=True)
+        # self.ffn_norm = nn.LayerNorm(args.dim, eps=args.norm_eps, bias=bias, elementwise_affine=True)
         self.feed_forward = MoeLayer(
             args=args,
             li=li,
@@ -812,33 +1065,38 @@ class TransformerBlock(nn.Module):
             experts=experts,
         )
 
-    def forward(
-        self, x: torch.Tensor, freqs_cis: torch.Tensor, cache: Optional[CacheView]
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, positions: torch.Tensor,
+                cache: Optional[CacheView]) -> torch.Tensor:
         st = time.time()
-        r = self.attention.forward(self.attention_norm(x), freqs_cis, cache)
+        
+        r = self.attention.forward(self.attention_norm(x), positions, cache)
         h = x + r
         ed = time.time()
         atten_time = ed - st
-        r, ffn_comm_time, ffn_compute_time, cache_hit_cnt = self.feed_forward.forward(self.ffn_norm(h))
+        r, ffn_comm_time, ffn_compute_time, cache_hit_cnt = self.feed_forward.forward(
+            self.ffn_norm(h))
         out = h + r
         return out, atten_time, ffn_comm_time, ffn_compute_time, cache_hit_cnt
 
 
 class Transformer(nn.Module):
+
     def __init__(self, args: ModelArgs, experts: Experts):
         super().__init__()
         self.args = args
         self._precomputed_freqs_cis: torch.Tensor = None
         self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim)
-        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
-        self.layers = nn.ModuleDict(
-            {
-                str(li): TransformerBlock(args=args, li=li, experts=experts)
-                for li in range(args.n_layers)
-            }
-        )
+        self.norm = RMSNorm(args.dim,
+                            eps=args.norm_eps,
+                            bias=args.lm_head_bias)
+        self.output = nn.Linear(args.dim,
+                                args.vocab_size,
+                                bias=args.lm_head_bias)
+        self.layers = nn.ModuleDict({
+            str(li):
+            TransformerBlock(args=args, li=li, experts=experts)
+            for li in range(args.n_layers)
+        })
         self.experts = experts
 
     @property
@@ -857,14 +1115,14 @@ class Transformer(nn.Module):
         if self._precomputed_freqs_cis is None:
             # default to 10**6
             theta = self.args.rope_theta or 1000000.0
+            max_position_embeddings = self.args.max_position_embeddings
             self._precomputed_freqs_cis = precompute_freqs_cis(
-                self.args.head_dim, 128_000, theta
-            )
+                self.args.head_dim, max_position_embeddings, theta,
+                self.args.rope_scaling)
 
         if self._precomputed_freqs_cis.device != self.device:
             self._precomputed_freqs_cis = self._precomputed_freqs_cis.to(
-                device=self.device
-            )
+                device=self.device)
         return self._precomputed_freqs_cis
 
     def forward(
@@ -876,36 +1134,39 @@ class Transformer(nn.Module):
         global EXPERT_CHOICES
         global CUR_TOKEN_CHOICES
 
-        (num_toks,) = input_ids.shape
+        (num_toks, ) = input_ids.shape
         assert sum(seqlens) == num_toks, (sum(seqlens), num_toks)
 
         input_metadata = cache.get_input_metadata(seqlens)
         h = self.tok_embeddings(input_ids)
-        freqs_cis = self.freqs_cis[input_metadata.positions]
-        
+
         atten_time_list = []
         ffn_comm_list = []
         ffn_compute_list = []
         cache_hit_count_list = []
-        
+
         for li in range(self.args.n_layers):
             cache_view = cache.get_view(li, input_metadata)
             with nvtx.annotate(f"block{li}", color="red"):
-                h, atten_time, ffn_comm, ffn_compute, cache_hit_count = self.layers[str(li)](h, freqs_cis, cache_view)
+                h, atten_time, ffn_comm, ffn_compute, cache_hit_count = self.layers[
+                    str(li)](h, input_metadata.positions, cache_view)
             atten_time_list.append(atten_time)
             ffn_comm_list.append(ffn_comm)
             ffn_compute_list.append(ffn_compute)
             cache_hit_count_list.append(cache_hit_count)
 
         self.experts.reset_quota()
-        atten_time_avg = torch.mean(torch.tensor(atten_time_list), dtype=float).item()*1000
-        ffn_comm_avg = torch.mean(torch.tensor(ffn_comm_list), dtype=float).item()*1000
-        ffn_compute_avg = torch.mean(torch.tensor(ffn_compute_list), dtype=float).item()*1000
+        atten_time_avg = torch.mean(torch.tensor(atten_time_list),
+                                    dtype=float).item() * 1000
+        ffn_comm_avg = torch.mean(torch.tensor(ffn_comm_list),
+                                  dtype=float).item() * 1000
+        ffn_compute_avg = torch.mean(torch.tensor(ffn_compute_list),
+                                     dtype=float).item() * 1000
 
         LOGS["attn"].append(atten_time_avg)
         LOGS["ffn_comm"].append(ffn_comm_avg)
         LOGS["ffn_compute"].append(ffn_compute_avg)
-        
+
         EXPERT_CHOICES["choice"].append(CUR_TOKEN_CHOICES.copy())
         EXPERT_CHOICES["cnt"].append(cache_hit_count_list.copy())
         CUR_TOKEN_CHOICES = []
@@ -913,9 +1174,13 @@ class Transformer(nn.Module):
         cache.update_seqlens(seqlens)
         outs = self.output(self.norm(h))
         return outs.float()
-    
-    def init_cache(self, cache_nblock: int, cache_nway: int, quota: int, replacement_policy: str) -> None:
-        self.experts.init_cache(cache_nblock, cache_nway, quota, replacement_policy=replacement_policy)
+
+    def init_cache(self, cache_nblock: int, cache_nway: int, quota: int,
+                   replacement_policy: str) -> None:
+        self.experts.init_cache(cache_nblock,
+                                cache_nway,
+                                quota,
+                                replacement_policy=replacement_policy)
 
     @staticmethod
     def load(model_path: Path, gpu: torch.device) -> "Transformer":
@@ -923,15 +1188,16 @@ class Transformer(nn.Module):
 
         non_experts = torch.load(
             model_path / "non-experts.pt",
+            weights_only=True,
             map_location=gpu,
             mmap=True,
         )
-        experts = torch.load(
-            model_path / "experts.pt", map_location=torch.device("cpu"), mmap=True
-        )
-        exp = Experts(experts)
-        
-        
+        experts = torch.load(model_path / "experts.pt",
+                             weights_only=True,
+                             map_location=torch.device("cpu"),
+                             mmap=True)
+        exp = Experts(model_args, experts)
+
         with torch.device("meta"):
             model = Transformer(args=model_args, experts=exp)
         model.load_state_dict(non_experts, assign=True, strict=True)
@@ -942,7 +1208,7 @@ class Transformer(nn.Module):
 @torch.inference_mode()
 def generate(
     prompts: List[str],
-    tokenizer: MistralTokenizer,
+    tokenizer: AutoTokenizer,
     model: Transformer,
     gpu: torch.device,
     *,
@@ -958,10 +1224,7 @@ def generate(
     prefill_tic.record()
 
     encoded_prompts: List[List[int]] = [
-        tokenizer.encode_chat_completion(
-            ChatCompletionRequest(messages=[UserMessage(content=p)])
-        ).tokens
-        for p in prompts
+        tokenizer.encode(p, add_special_tokens=True) for p in prompts
     ]
     B, V = len(encoded_prompts), model.args.vocab_size
     seqlens = [len(x) for x in encoded_prompts]
@@ -980,11 +1243,14 @@ def generate(
 
     # prefill / prompt evaluation stage
     prelogits = model.forward(
-        torch.tensor(sum(encoded_prompts, []), device=model.device, dtype=torch.long),
+        torch.tensor(sum(encoded_prompts, []),
+                     device=model.device,
+                     dtype=torch.long),
         seqlens=seqlens,
         cache=cache,
     )
-    last_positions = torch.tensor(seqlens, device=prelogits.device).cumsum(dim=0) - 1
+    last_positions = torch.tensor(seqlens,
+                                  device=prelogits.device).cumsum(dim=0) - 1
     last_token_prelogits = prelogits.index_select(0, last_positions)
     prefill_toc.record()
     torch.cuda.synchronize(device=gpu)
@@ -1003,14 +1269,18 @@ def generate(
     token_gen_time_history = []
     prev_token_time = time.time()
     for _ in range(max_tokens):
-        next_token = sample(last_token_prelogits, temperature=temperature, top_p=0.8)
+        next_token = sample(last_token_prelogits,
+                            temperature=temperature,
+                            top_p=0.8)
         is_finished = is_finished | (next_token == eos_id).cpu()
 
         if is_finished.all():
             break
 
         generated_tensors.append(next_token[:, None])
-        last_token_prelogits = model.forward(next_token, seqlens=[1] * B, cache=cache)
+        last_token_prelogits = model.forward(next_token,
+                                             seqlens=[1] * B,
+                                             cache=cache)
         token_gen_time_history.append(time.time() - prev_token_time)
         prev_token_time = time.time()
         assert last_token_prelogits.shape == (B, V)
@@ -1029,7 +1299,9 @@ def generate(
     if profile is True:
         cpumonitor.stop()
         cpumonitor.save_data("cpu_freq_avg.csv")
-        dump_token_generation_time_to_csv(token_gen_time_history, cpumonitor.get_data_avg(), "token_gen_time.csv")
+        dump_token_generation_time_to_csv(token_gen_time_history,
+                                          cpumonitor.get_data_avg(),
+                                          "token_gen_time.csv")
 
     return (
         seqlens,
@@ -1041,7 +1313,8 @@ def generate(
     )
 
 
-def sample(logits: torch.Tensor, temperature: float, top_p: float) -> torch.Tensor:
+def sample(logits: torch.Tensor, temperature: float,
+           top_p: float) -> torch.Tensor:
     if temperature > 0:
         probs = torch.softmax(logits / temperature, dim=-1)
         next_token = sample_top_p(probs, top_p)
@@ -1063,34 +1336,25 @@ def sample_top_p(probs: torch.Tensor, p: float) -> torch.Tensor:
     return torch.gather(probs_idx, -1, next_token)
 
 
-def main(
-    model_path: str,
-    prompt: str,
-    prompt_path: str,
-    n_prompts: int,
-    max_tokens: int,
-    hide_resp: bool,
-    cache_nblocks: int,
-    cache_nways: int,
-    cache_quota: int,
-    csv_report_file: str,
-    cache_report_file: str,
-    cache_replace_policy: str
-):
+def main(model_path: str, prompt: str, prompt_path: str, n_prompts: int,
+         max_tokens: int, hide_resp: bool, cache_nblocks: int,
+         cache_nways: int, cache_quota: int, csv_report_file: str,
+         cache_report_file: str, cache_replace_policy: str):
     global EXPERT_CHOICES
     assert prompt or (prompt_path and n_prompts and n_prompts > 0)
     gpu_0 = torch.device("cuda:0")
     prompts: list[str] = None
     if prompt:
-        prompts = [prompt]
+        prompts = [f"<|user|>{prompt}<|end|><|assistant|>"]
     else:
         dataset: list[str] = get_json(Path(prompt_path))["prompts"]
         n_repeats = -(n_prompts // -len(dataset))  # ceil division
         prompts = (dataset * n_repeats)[:n_prompts]
-    tokenizer = MistralTokenizer.v1()
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = Transformer.load(Path(model_path), gpu_0)
 
-    model.init_cache(cache_nblocks, cache_nways, cache_quota, cache_replace_policy)
+    model.init_cache(cache_nblocks, cache_nways, cache_quota,
+                     cache_replace_policy)
 
     # warmup
     generate(
@@ -1100,7 +1364,7 @@ def main(
         gpu_0,
         max_tokens=1,
         max_batch_size=len(prompts),
-        eos_id=tokenizer.instruct_tokenizer.tokenizer.eos_id,
+        eos_id=tokenizer.eos_token_id,
     )
     reset_logs()
 
@@ -1111,7 +1375,7 @@ def main(
         gpu_0,
         max_tokens=max_tokens,
         max_batch_size=len(prompts),
-        eos_id=tokenizer.instruct_tokenizer.tokenizer.eos_id,
+        eos_id=tokenizer.eos_token_id,
         profile=True,
     )
     print("=" * 20)
@@ -1157,17 +1421,7 @@ if __name__ == "__main__":
     parser.add_argument("--cache-replace-policy", type=str, default="FIFO")
     args = parser.parse_args()
 
-    main(
-        args.model_path,
-        args.prompt,
-        args.prompt_path,
-        args.n_prompts,
-        args.max_tokens,
-        args.hide_resp,
-        args.cache_nblocks,
-        args.cache_nways,
-        args.cache_quota,
-        args.breakdown_csv,
-        args.cachehit_csv,
-        args.cache_replace_policy
-    )
+    main(args.model_path, args.prompt, args.prompt_path, args.n_prompts,
+         args.max_tokens, args.hide_resp, args.cache_nblocks, args.cache_nways,
+         args.cache_quota, args.breakdown_csv, args.cachehit_csv,
+         args.cache_replace_policy)
