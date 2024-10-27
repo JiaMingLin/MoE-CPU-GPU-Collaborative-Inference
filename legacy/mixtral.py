@@ -940,6 +940,7 @@ class Transformer(nn.Module):
 
 
 @torch.inference_mode()
+
 def generate(
     prompts: List[str],
     tokenizer: MistralTokenizer,
