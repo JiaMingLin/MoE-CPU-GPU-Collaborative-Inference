@@ -410,12 +410,12 @@ class Attention(nn.Module):
         # xformers requires (B=1, S, H, D)
         xq, key, val = xq[None, ...], key[None, ...], val[None, ...]
 
-        # xq = xq.to(dtype=torch.float16)
-        # key = key.to(dtype=torch.float16)
-        # val = val.to(dtype=torch.float16)
+        xq = xq.to(dtype=torch.float16)
+        key = key.to(dtype=torch.float16)
+        val = val.to(dtype=torch.float16)
         output = memory_efficient_attention(
             xq, key, val, None if cache is None else cache.mask)
-        # output = output.to(dtype=torch.bfloat16)
+        output = output.to(dtype=torch.bfloat16)
 
         output = output.view(seqlen_sum, self.n_heads * self.head_dim)
 
@@ -703,6 +703,9 @@ class MoeLayer(nn.Module):
             st = time.time()
             ret_l, cache_hit = self.experts.cache_aware_forward(
                 self.li, selected_experts[0].tolist(), ex)
+            
+            CUR_TOKEN_CHOICES.extend(
+                sorted([selected_experts[0][0].item(), selected_experts[0][1].item()]))
 
             for idx, i in enumerate(selected_experts[0]):
                 batch_idx, nth_expert = torch.where(selected_experts == i)
