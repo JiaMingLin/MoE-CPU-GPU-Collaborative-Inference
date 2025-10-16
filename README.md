@@ -1,6 +1,6 @@
 # Efficient CPU-GPU Collaborative Inference for MoE-based LLMs on Memory-Limited Systems
 
-[![Paper](https://img.shields.io/badge/Paper-Accepted-green)](https://www.aspdac.com/aspdac2026/)
+[![Paper](https://img.shields.io/badge/Paper-Accepted-green)](ASP-DAC26_CPU_GPU_MoE.pdf)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)](https://pytorch.org)
