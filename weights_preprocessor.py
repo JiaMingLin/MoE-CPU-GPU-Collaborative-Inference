@@ -8,7 +8,6 @@ import safetensors.torch
 
 import torch
 
-
 class WeightsPreprocessor:
 
     def __init__(self, input_path: str, output_path: str, hf: bool) -> None:
@@ -27,22 +26,43 @@ class WeightsPreprocessor:
             logging.error(f"Config file not found in {self.input_path}")
             raise
 
-    def load_hf_weights(self) -> dict:
+    def _torch_load_cpu(self, path: Path):
         try:
-            with open(self.input_path / "model.safetensors.index.json",
-                      "r") as f:
-                metadata = json.load(f)
-        except FileNotFoundError:
-            logging.error(
-                f"model.safetensors.index.json not found in {self.input_path}")
-            raise
+            return torch.load(path, map_location="cpu", weights_only=True)
+        except TypeError:
+            return torch.load(path, map_location="cpu")
 
-        ws = {}
-        for filename in set(metadata["weight_map"].values()):
-            ws.update(
-                safetensors.torch.load_file(self.input_path / filename,
-                                            device="cpu"))
-        return ws
+    def load_hf_weights(self) -> dict:
+        safetensors_index = self.input_path / "model.safetensors.index.json"
+        if safetensors_index.exists():
+            with open(safetensors_index, "r") as f:
+                metadata = json.load(f)
+            ws = {}
+            for filename in set(metadata["weight_map"].values()):
+                ws.update(
+                    safetensors.torch.load_file(self.input_path / filename,
+                                                device="cpu"))
+            return ws
+
+        pytorch_index = self.input_path / "pytorch_model.bin.index.json"
+        if pytorch_index.exists():
+            with open(pytorch_index, "r") as f:
+                metadata = json.load(f)
+            ws = {}
+            for filename in set(metadata["weight_map"].values()):
+                ws.update(self._torch_load_cpu(self.input_path / filename))
+            return ws
+
+        pytorch_single = self.input_path / "pytorch_model.bin"
+        if pytorch_single.exists():
+            return self._torch_load_cpu(pytorch_single)
+
+        logging.error(
+            "No supported HF weights found. Expected one of: "
+            "model.safetensors.index.json, pytorch_model.bin.index.json, pytorch_model.bin "
+            f"in {self.input_path}")
+        raise FileNotFoundError(
+            f"No supported HF weights found in {self.input_path}")
 
     def _get_first_present(self, source: dict, keys: list[str], *, default=None):
         for key in keys:
@@ -59,7 +79,14 @@ class WeightsPreprocessor:
         # Fallback to model_type when architectures is missing.
         return self.config.get("model_type", "")
 
+    def _pop_first_present(self, source: dict, keys: list[str]):
+        for key in keys:
+            if key in source:
+                return source.pop(key)
+        raise KeyError(f"None of keys found: {keys}")
+
     def process_hf_config(self) -> None:
+        self.output_path.mkdir(parents=True, exist_ok=True)
         model_arch = self._get_model_architecture()
         supported_architectures = {"MixtralForCausalLM", "MiniCPMMoEForCausalLM"}
         if model_arch and model_arch not in supported_architectures:
@@ -101,10 +128,11 @@ class WeightsPreprocessor:
             self.lm_head_bias = True
         else:
             self.lm_head_bias = False
-        if "rope_scaling" in self.config:
+        rope_scaling = self.config.get("rope_scaling")
+        if isinstance(rope_scaling, dict):
             conf["rope_scaling"] = {
-                "short_factor": self.config["rope_scaling"]["short_factor"],
-                "mscale": self.config["rope_scaling"]["short_mscale"],
+                "short_factor": rope_scaling["short_factor"],
+                "mscale": rope_scaling["short_mscale"],
             }
         conf["max_position_embeddings"] = self._get_first_present(
             self.config, ["max_position_embeddings"])
@@ -120,15 +148,21 @@ class WeightsPreprocessor:
         for li in range(n_layers):
             for ei in range(n_experts):
                 # Keep Mixtral-compatible mapping for MiniCPM-MoE experts.
-                w1 = ws.pop(
-                    f"model.layers.{li}.block_sparse_moe.experts.{ei}.w1.weight"
-                )
-                w2 = ws.pop(
-                    f"model.layers.{li}.block_sparse_moe.experts.{ei}.w2.weight"
-                )
-                w3 = ws.pop(
-                    f"model.layers.{li}.block_sparse_moe.experts.{ei}.w3.weight"
-                )
+                w1 = self._pop_first_present(
+                    ws, [
+                        f"model.layers.{li}.block_sparse_moe.experts.{ei}.w1.weight",
+                        f"model.layers.{li}.mlp.experts.{ei}.w1.weight",
+                    ])
+                w2 = self._pop_first_present(
+                    ws, [
+                        f"model.layers.{li}.block_sparse_moe.experts.{ei}.w2.weight",
+                        f"model.layers.{li}.mlp.experts.{ei}.w2.weight",
+                    ])
+                w3 = self._pop_first_present(
+                    ws, [
+                        f"model.layers.{li}.block_sparse_moe.experts.{ei}.w3.weight",
+                        f"model.layers.{li}.mlp.experts.{ei}.w3.weight",
+                    ])
                 experts[f"{li}.{ei}"] = torch.stack((w1, w2.T, w3), dim=0)
             gc.collect()
 
@@ -138,10 +172,20 @@ class WeightsPreprocessor:
         return ws
 
     def process_hf_non_experts(self, ws: dict) -> None:
+        tok_embeddings = ws.pop("model.embed_tokens.weight")
+        if "lm_head.weight" in ws:
+            output_weight = ws.pop("lm_head.weight")
+        else:
+            # Some MiniCPM checkpoints tie output projection with token embeddings.
+            logging.warning(
+                "lm_head.weight not found, using model.embed_tokens.weight as output.weight"
+            )
+            output_weight = tok_embeddings
+
         non_experts = {
-            "tok_embeddings.weight": ws.pop("model.embed_tokens.weight"),
+            "tok_embeddings.weight": tok_embeddings,
             "norm.weight": ws.pop("model.norm.weight"),
-            "output.weight": ws.pop("lm_head.weight"),
+            "output.weight": output_weight,
         }
         if self.lm_head_bias:
             non_experts["norm.bias"] = ws.pop("model.norm.bias")
@@ -158,8 +202,11 @@ class WeightsPreprocessor:
                     f"{prefix}.input_layernorm.bias")
                 non_experts[f"{pfx}.ffn_norm.bias"] = ws.pop(
                     f"{prefix}.post_attention_layernorm.bias")
-            non_experts[f"{pfx}.feed_forward.gate.weight"] = ws.pop(
-                f"{prefix}.block_sparse_moe.gate.weight")
+            non_experts[f"{pfx}.feed_forward.gate.weight"] = self._pop_first_present(
+                ws, [
+                    f"{prefix}.block_sparse_moe.gate.weight",
+                    f"{prefix}.mlp.gate.weight",
+                ])
             for pi in ["q", "k", "v", "o"]:
                 non_experts[f"{pfx}.attention.w{pi}.weight"] = ws.pop(
                     f"{prefix}.self_attn.{pi}_proj.weight")
@@ -206,6 +253,7 @@ class WeightsPreprocessor:
         return ws
 
     def start(self) -> None:
+        self.output_path.mkdir(parents=True, exist_ok=True)
         if self.hf:
             self.config = self.get_hf_model_configs()
             self.process_hf_config()

@@ -43,10 +43,32 @@ def generate(
     prefill_toc = torch.cuda.Event(enable_timing=True)
     prefill_tic.record()
 
-    if model.args.model_type == "PhiMoEForCausalLM":
-        encoded_prompts: List[List[int]] = [
-            tokenizer.encode(p, add_special_tokens=True) for p in prompts
-        ]
+    if model.args.model_type in {"PhiMoEForCausalLM", "MiniCPMForCausalLM", "MiniCPMMoEForCausalLM"}:
+        encoded_prompts: List[List[int]] = []
+        for p in prompts:
+            if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+                chat_out = tokenizer.apply_chat_template(
+                    [{"role": "user", "content": p}],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                )
+                if isinstance(chat_out, list):
+                    ids = chat_out
+                elif hasattr(chat_out, "input_ids"):
+                    ids = chat_out.input_ids
+                    if ids and isinstance(ids[0], list):
+                        ids = ids[0]
+                elif isinstance(chat_out, dict) and "input_ids" in chat_out:
+                    ids = chat_out["input_ids"]
+                    if ids and isinstance(ids[0], list):
+                        ids = ids[0]
+                else:
+                    raise TypeError(
+                        f"Unsupported apply_chat_template output type: {type(chat_out)}"
+                    )
+            else:
+                ids = tokenizer.encode(p, add_special_tokens=True)
+            encoded_prompts.append(ids)
     else: # MixtralForCausalLM
         encoded_prompts: List[List[int]] = [
             tokenizer.encode_chat_completion(
@@ -167,23 +189,34 @@ def sample_top_p(probs: torch.Tensor, p: float) -> torch.Tensor:
 def main(model_path: str, prompt: str, prompt_path: str, n_prompts: int,
          max_tokens: int, hide_resp: bool, cache_nblocks: int,
          cache_nways: int, cache_quota: int, csv_report_file: str,
-         cache_report_file: str, cache_replace_policy: str):
+         cache_report_file: str, cache_replace_policy: str,
+         tokenizer_path: Optional[str]):
     global EXPERT_CHOICES
     assert prompt or (prompt_path and n_prompts and n_prompts > 0)
+    if max_tokens is None:
+        max_tokens = 128
 
     gpu_0 = torch.device("cuda:0")
     model = Transformer.load(Path(model_path), gpu_0)
-    if model.args.model_type == "PhiMoEForCausalLM":
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-    else: # MixtralForCausalLM
+    model_type = model.args.model_type
+    use_hf_tokenizer = model_type in {"PhiMoEForCausalLM", "MiniCPMForCausalLM", "MiniCPMMoEForCausalLM"}
+    if use_hf_tokenizer:
+        tok_path = tokenizer_path if tokenizer_path else model_path
+        tokenizer = AutoTokenizer.from_pretrained(
+            tok_path,
+            trust_remote_code=True,
+            use_fast=False,
+            fix_mistral_regex=True,
+        )
+    else:  # MixtralForCausalLM
         tokenizer = MistralTokenizer.v1()
 
     
     prompts: list[str] = None
     if prompt:
-        if model.args.model_type == "PhiMoEForCausalLM":
-            prompts = [f"<|user|>{prompt}<|end|><|assistant|>"]
-        else: # MixtralForCausalLM
+        if use_hf_tokenizer:
+            prompts = [prompt]
+        else:  # MixtralForCausalLM
             prompts = [f"{prompt}"]
     else:
         with open(Path(prompt_path), "r") as f:
@@ -194,7 +227,7 @@ def main(model_path: str, prompt: str, prompt_path: str, n_prompts: int,
     model.init_cache(cache_nblocks, cache_nways, cache_quota,
                      cache_replace_policy)
 
-    eos_token_id = tokenizer.eos_token_id if model.args.model_type == "PhiMoEForCausalLM" else tokenizer.instruct_tokenizer.tokenizer.eos_id
+    eos_token_id = tokenizer.eos_token_id if use_hf_tokenizer else tokenizer.instruct_tokenizer.tokenizer.eos_id
     # warmup
     generate(
         ["hello, how are you?"],
@@ -250,7 +283,7 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", type=str)
     parser.add_argument("--prompt-path", type=str)
     parser.add_argument("--n-prompts", type=int)
-    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--hide-resp", action="store_true")
     parser.add_argument("--cache-nblocks", type=int, default=0)
     parser.add_argument("--cache-nways", type=int, default=0)
@@ -258,10 +291,11 @@ if __name__ == "__main__":
     parser.add_argument("--breakdown-csv", type=str, default="out.csv")
     parser.add_argument("--cachehit-csv", type=str, default="cache.csv")
     parser.add_argument("--cache-replace-policy", type=str, default="FIFO")
+    parser.add_argument("--tokenizer-path", type=str, default=None)
     args = parser.parse_args()
 
     reset_logs()
     main(args.model_path, args.prompt, args.prompt_path, args.n_prompts,
          args.max_tokens, args.hide_resp, args.cache_nblocks, args.cache_nways,
          args.cache_quota, args.breakdown_csv, args.cachehit_csv,
-         args.cache_replace_policy)
+         args.cache_replace_policy, args.tokenizer_path)
