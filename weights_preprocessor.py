@@ -44,28 +44,59 @@ class WeightsPreprocessor:
                                             device="cpu"))
         return ws
 
+    def _get_first_present(self, source: dict, keys: list[str], *, default=None):
+        for key in keys:
+            if key in source:
+                return source[key]
+        if default is not None:
+            return default
+        raise KeyError(f"None of keys found: {keys}")
+
+    def _get_model_architecture(self) -> str:
+        architectures = self.config.get("architectures", [])
+        if architectures:
+            return architectures[0]
+        # Fallback to model_type when architectures is missing.
+        return self.config.get("model_type", "")
+
     def process_hf_config(self) -> None:
+        model_arch = self._get_model_architecture()
+        supported_architectures = {"MixtralForCausalLM", "MiniCPMMoEForCausalLM"}
+        if model_arch and model_arch not in supported_architectures:
+            logging.warning(
+                f"Unexpected architecture '{model_arch}'. Trying Mixtral-compatible parsing."
+            )
+
         conf = {}
-        conf["dim"] = self.config["hidden_size"]
-        conf["n_layers"] = self.config["num_hidden_layers"]
-        conf["head_dim"] = self.config["hidden_size"] // self.config[
-            "num_attention_heads"]
-        conf["hidden_dim"] = self.config["intermediate_size"]
-        conf["n_heads"] = self.config["num_attention_heads"]
-        conf["n_kv_heads"] = self.config["num_key_value_heads"]
-        conf["norm_eps"] = self.config["rms_norm_eps"]
-        conf["vocab_size"] = self.config["vocab_size"]
-        conf["rope_theta"] = self.config["rope_theta"]
+        conf["dim"] = self._get_first_present(self.config, ["hidden_size"])
+        conf["n_layers"] = self._get_first_present(self.config,
+                                                   ["num_hidden_layers"])
+        conf["n_heads"] = self._get_first_present(self.config,
+                                                  ["num_attention_heads"])
+        conf["head_dim"] = conf["dim"] // conf["n_heads"]
+        conf["hidden_dim"] = self._get_first_present(self.config,
+                                                     ["intermediate_size"])
+        conf["n_kv_heads"] = self._get_first_present(
+            self.config, ["num_key_value_heads", "num_kv_heads"],
+            default=conf["n_heads"])
+        conf["norm_eps"] = self._get_first_present(self.config,
+                                                   ["rms_norm_eps"])
+        conf["vocab_size"] = self._get_first_present(self.config, ["vocab_size"])
+        conf["rope_theta"] = self._get_first_present(self.config, ["rope_theta"],
+                                                     default=10000.0)
         conf["moe"] = {
-            "num_experts_per_tok": self.config["num_experts_per_tok"],
-            "num_experts": self.config["num_local_experts"],
+            "num_experts_per_tok": self._get_first_present(
+                self.config, ["num_experts_per_tok"]),
+            "num_experts":
+            self._get_first_present(self.config,
+                                    ["num_local_experts", "num_experts"]),
         }
-        if self.config["attention_bias"]:
+        if self.config.get("attention_bias", False):
             conf["attention_bias"] = True
             self.attention_bias = True
         else:
             self.attention_bias = False
-        if self.config["lm_head_bias"]:
+        if self.config.get("lm_head_bias", False):
             conf["lm_head_bias"] = True
             self.lm_head_bias = True
         else:
@@ -75,16 +106,20 @@ class WeightsPreprocessor:
                 "short_factor": self.config["rope_scaling"]["short_factor"],
                 "mscale": self.config["rope_scaling"]["short_mscale"],
             }
-        conf["max_position_embeddings"] = self.config[
-            "max_position_embeddings"]
-        conf["model_type"] = self.config["architectures"][0]
+        conf["max_position_embeddings"] = self._get_first_present(
+            self.config, ["max_position_embeddings"])
+        conf["model_type"] = model_arch
         with open(self.output_path / "params.json", "w") as f:
             json.dump(conf, f)
 
     def process_hf_experts(self, ws: dict) -> None:
         experts = {}
-        for li in range(self.config["num_hidden_layers"]):
-            for ei in range(self.config["num_local_experts"]):
+        n_layers = self._get_first_present(self.config, ["num_hidden_layers"])
+        n_experts = self._get_first_present(self.config,
+                                            ["num_local_experts", "num_experts"])
+        for li in range(n_layers):
+            for ei in range(n_experts):
+                # Keep Mixtral-compatible mapping for MiniCPM-MoE experts.
                 w1 = ws.pop(
                     f"model.layers.{li}.block_sparse_moe.experts.{ei}.w1.weight"
                 )
