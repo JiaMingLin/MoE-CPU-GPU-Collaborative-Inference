@@ -40,6 +40,8 @@ class ModelArgs:
     attention_bias: bool = False
     rope_scaling: dict = None
     model_type: str = MIXTRAL_MODEL_TYPE
+    scale_emb: float = 1.0
+    scale_depth: float = 1.0
 
     @classmethod
     def from_dict(cls, params: dict):
@@ -767,6 +769,7 @@ class TransformerBlock(nn.Module):
             gate=nn.Linear(args.dim, args.moe["num_experts"], bias=False),
             experts=experts,
         )
+        self.residual_scale = args.scale_depth / (args.n_layers**0.5)
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor,
                 positions: torch.Tensor,
@@ -774,12 +777,12 @@ class TransformerBlock(nn.Module):
         st = time.time()
         r = self.attention.forward(self.attention_norm(x), freqs_cis,
                                    positions, cache)
-        h = x + r
+        h = x + r * self.residual_scale
         ed = time.time()
         atten_time = ed - st
         r, ffn_comm_time, ffn_compute_time, cache_hit_cnt = self.feed_forward.forward(
             self.ffn_norm(h))
-        out = h + r
+        out = h + r * self.residual_scale
         return out, atten_time, ffn_comm_time, ffn_compute_time, cache_hit_cnt
 
 
@@ -845,7 +848,7 @@ class Transformer(nn.Module):
         assert sum(seqlens) == num_toks, (sum(seqlens), num_toks)
 
         input_metadata = cache.get_input_metadata(seqlens)
-        h = self.tok_embeddings(input_ids)
+        h = self.tok_embeddings(input_ids) * self.args.scale_emb
         if self.args.model_type == PHI_MODEL_TYPE:
             freqs_cis = torch.tensor(0)
         else:  # MixtralForCausalLM

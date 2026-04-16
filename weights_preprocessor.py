@@ -136,6 +136,11 @@ class WeightsPreprocessor:
             }
         conf["max_position_embeddings"] = self._get_first_present(
             self.config, ["max_position_embeddings"])
+        conf["scale_emb"] = self._get_first_present(self.config, ["scale_emb"],
+                                                    default=1.0)
+        conf["scale_depth"] = self._get_first_present(self.config,
+                                                      ["scale_depth"],
+                                                      default=1.0)
         conf["model_type"] = model_arch
         with open(self.output_path / "params.json", "w") as f:
             json.dump(conf, f)
